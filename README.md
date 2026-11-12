@@ -52,29 +52,45 @@ Vai aparecer um link tipo `http://localhost:5173` — abra no navegador. Essa é
 
 ## 4. Como você vai criar a conta de cada cliente
 
-Como o plano é você mesmo criar o login (email + senha) de cada pessoa depois que ela te mandar o pagamento, a tela de login pública **só mostra o campo de entrar** — sem botão de "criar conta" nem "esqueci minha senha". Isso evita que qualquer um tente se cadastrar sozinho ou fique clicando em opções que não deveriam usar.
+Não existe cadastro público: a tela de login só tem o campo de entrar. As contas são criadas por você no painel **/admin** (abaixo). O antigo link `?dono=1` não existe mais.
 
-**Acesso especial só pra você:** pra ver as opções de criar conta e recuperar senha, acesse o app com `?dono=1` no final do link — por exemplo:
+1. **Desative o cadastro público no Supabase** (obrigatório): vá em **Authentication → Sign In / Providers → Email** e desligue a opção de permitir novos cadastros. Sem isso, alguém que conheça o Supabase ainda conseguiria criar conta direto pela API, mesmo sem botão no app. As contas criadas pelo /admin continuam funcionando normalmente.
+2. **Termos de Uso**: na primeira vez que a pessoa entrar, o AGIOPAY mostra os Termos de Uso e ela só usa o app depois de aceitar.
+3. **Senha**: dentro do app, em "Minha conta", cada pessoa pode trocar a própria senha (recomendado logo no primeiro acesso, já que a senha inicial foi mandada por WhatsApp). Se ela esquecer, você define uma nova pelo /admin.
 
-```
-https://agiopay.vercel.app/?dono=1
-```
+### Painel /admin (jeito recomendado de cadastrar clientes)
 
-Só quem tiver esse link exato vê os botões extras. Guarde esse link só pra você (ex: salvo nos favoritos do navegador). Se um dia quiser trocar `dono` por outra palavra secreta, é só pedir que eu ajusto no código.
+Acesse `https://seu-site.vercel.app/admin`, entre com a sua conta e cadastre nome, email e senha da pessoa. O painel já gera uma senha e um texto pronto pra copiar e mandar no WhatsApp. Pelo mesmo painel dá pra **trocar a senha** de alguém e **bloquear/desbloquear** uma conta (bloquear não apaga os dados).
 
-Passo a passo pra criar a conta de cada cliente:
+Configuração (uma vez só):
 
-1. **Desative o cadastro público no Supabase também** (reforça a proteção, mesmo já estando escondido no app): vá em **Authentication → Sign In / Providers → Email** e desligue a opção de permitir novos cadastros (o nome exato varia um pouco conforme a versão do painel, mas é nessa seção).
-2. **Crie a conta da pessoa manualmente**: vá em **Authentication → Users → Add user → Create new user**. Preencha o email dela, defina uma senha temporária (ou marque para enviar um convite por email, se preferir que ela mesma defina a senha). Ou, se preferir usar a tela do próprio app, acesse com `?dono=1` e cadastre por lá.
-3. Mande pra ela o email e a senha (ou deixe o Supabase mandar o convite por email).
-4. **Sobre os Termos de Uso**: não importa se a conta foi criada pela tela `?dono=1` ou por você direto no painel do Supabase — na primeira vez que a pessoa entrar, o AGIOPAY mostra uma tela obrigatória com os Termos de Uso, e ela só consegue usar o app depois de marcar que aceita. Você não precisa fazer nada a mais pra isso acontecer.
-5. **Se a pessoa esquecer a senha**, como o botão fica escondido pra ela, o caminho é ela te avisar e você resetar a senha manualmente: no Supabase, vá em **Authentication → Users**, clique nos "..." ao lado do usuário dela e escolha a opção de redefinir/enviar link de redefinição de senha. Se preferir deixar ela resetar sozinha, é só usar o link `?dono=1` você mesmo, clicar em "Esqueci minha senha" com o email dela, ou compartilhar esse link especial com ela.
+1. No Supabase: **Project Settings → API** → copie a chave **service_role** (é secreta).
+2. Na Vercel: **Settings → Environment Variables**, adicione:
+   - `SUPABASE_SERVICE_ROLE_KEY` = a chave service_role (**sem** `VITE_` na frente — com `VITE_` ela vai parar no navegador e qualquer pessoa pega)
+   - `ADMIN_EMAILS` = o seu email de login (se forem vários, separe por vírgula)
+3. Faça um novo deploy (ou `git push`).
+4. Pra testar no seu computador, coloque as mesmas duas linhas no seu `.env` e rode `npm run dev` → `http://localhost:5173/admin`.
+
+Quem não estiver em `ADMIN_EMAILS` vê "Sem acesso", e a conferência é feita no servidor (`api/admin.js`), não só na tela. Na tela de login do /admin aparece "Esqueci minha senha", pra você mesmo recuperar o acesso.
 
 ## 5. Reforço de segurança (rode antes de divulgar pra alguém)
 
 Se você já criou o banco antes desta atualização, rode o arquivo `supabase_migration_security.sql` no SQL Editor do Supabase — ele adiciona travas direto no banco (valor não pode ser negativo, nome não pode ficar vazio, etc.), então mesmo que alguém tente burlar o site chamando o Supabase diretamente, o banco recusa. Não apaga nenhum dado existente.
 
 Se for uma instalação nova, essas travas já vêm incluídas no `supabase_schema.sql` normal — não precisa rodar o arquivo de migração separado.
+
+### Migrações do banco (rode na ordem, se seu banco é anterior a essas versões)
+
+1. `supabase_migration_parcelas.sql`
+2. `supabase_migration_estornos.sql`: cancelar baixa passa a **marcar** o pagamento como cancelado (com data, hora e motivo) em vez de apagar. Também tira do app a permissão de apagar pagamento.
+
+O app mostra um aviso no topo dizendo qual arquivo ainda falta rodar.
+
+### Parcelas, baixas e aba Hoje
+
+Rode o arquivo `supabase_migration_parcelas.sql` no SQL Editor do Supabase. Ele cria a tabela `parcelas`, adiciona os dias de cobrança no empréstimo e liga cada pagamento (baixa) à parcela que ele pagou. Também corrige a permissão que faltava para **editar** pagamento. Não apaga nenhum dado — os empréstimos antigos continuam funcionando como "pagamento único". Enquanto essa migração não for rodada, o app mostra um aviso no topo.
+
+Instalação nova: já vem tudo no `supabase_schema.sql`.
 
 ## 6. Teste de produção (antes de divulgar pra alguém)
 
@@ -93,16 +109,33 @@ Faça esse checklist com pelo menos 2 contas diferentes (a sua e a de um amigo, 
 - [ ] **O mais importante**: logar com uma segunda conta e confirmar que ela **não vê** os clientes da primeira conta (isso testa se o Row Level Security está funcionando)
 - [ ] Testar no celular (o navegador do celular acessando o mesmo link, ou o localhost pela rede — veja abaixo)
 - [ ] Apagar um empréstimo (deve manter o resto do dossiê) e apagar um cliente inteiro (deve pedir confirmação antes)
-- [ ] Registrar um pagamento errado de propósito e testar **editar** e **apagar** esse pagamento — o saldo deve voltar a ficar correto
+- [ ] Registrar um pagamento errado de propósito e testar **corrigir** e **cancelar** esse pagamento — o saldo deve voltar a ficar correto e o histórico mostrar o cancelamento
 - [ ] Tentar cadastrar um empréstimo com valor negativo ou zero — o botão de salvar deve continuar desabilitado
 - [ ] Testar os filtros da lista de clientes (Atrasados / Em aberto / Quitados) e as opções de ordenar (Nome, Maior saldo, Mais atrasados)
 - [ ] Clicar no seu nome no topo do app pra abrir "Minha conta", trocar o nome e trocar a senha
-- [ ] Acessar com `?dono=1` e confirmar que só ali aparecem as opções de criar conta e esqueci senha
+- [ ] Abrir o link normal e confirmar que não tem opção de criar conta; abrir `/admin` com uma conta que não está em `ADMIN_EMAILS` e ver "Sem acesso"
 - [ ] Salvar uma combinação de taxa/prazo como "modelo" e usá-la num novo empréstimo com um clique
 - [ ] Baixar o modelo de CSV, preencher com 2-3 clientes de teste, e importar — conferir se os clientes e empréstimos apareceram certos
 - [ ] Deixar um empréstimo vencendo hoje (ou já atrasado) e conferir se o sino no topo mostra a notificação
+- [ ] Criar um empréstimo **parcelado** (ex.: 30 parcelas, Seg–Sáb, pulando feriados), tirar uma data da lista e trocar outra antes de salvar — conferir que continuam 30 parcelas
+- [ ] Na aba **Hoje**, conferir previsto / recebido / falta receber; dar baixa numa parcela e ver os números mudarem; depois **cancelar a baixa** e ver voltar
+- [ ] Dar baixa parcial (valor menor que a parcela) e ver "falta R$ X"
+- [ ] Com parcelas atrasadas, usar **Reagendar atrasadas**: as datas vêm sugeridas pro fim; mudar o valor de uma (multa) e salvar
+- [ ] Editar a data de uma parcela só (lápis ao lado dela)
+- [ ] **Quitar empréstimo** de uma vez e conferir que todas as parcelas ficaram pagas
+- [ ] Cancelar uma baixa escrevendo um motivo e conferir que ela aparece em "Baixas canceladas" no empréstimo e na aba **Caixa**
+- [ ] Aba **Caixa**: conferir Hoje / Semana / Mês com os valores que você lembra; exportar o CSV do período
+- [ ] **Offline**: com o app publicado (não funciona no `npm run dev`), abrir uma vez com internet, ligar o modo avião, fechar e abrir o app de novo — tem que abrir com os dados. Dar baixa em 2 parcelas, ver "2 operações esperando", desligar o modo avião e ver enviar sozinho
+- [ ] Offline, tentar sair da conta com baixa na fila: tem que aparecer o aviso
+- [ ] **Backup**: em "Minha conta", baixar o backup; apagar um cliente de teste; restaurar o arquivo e ver o cliente voltar
 
 **Pra testar no celular sem publicar ainda:** rode `npm run dev -- --host`, isso mostra um endereço tipo `http://192.168.x.x:5173` que funciona em qualquer aparelho conectado no mesmo Wi-Fi.
+
+### Backup
+
+O plano grátis do Supabase **não tem backup que você consiga baixar e restaurar**. Por isso o app tem o próprio: em **Minha conta → Backup → Baixar backup** sai um arquivo `.json` com tudo (clientes, empréstimos, parcelas, pagamentos e baixas canceladas). Guarde fora do celular (Google Drive, email). Se passar 7 dias sem backup, a aba Hoje avisa.
+
+**Restaurar** recoloca no banco tudo que está no arquivo, inclusive o que tinha sido apagado, e não apaga o que foi cadastrado depois do backup.
 
 ## 7. Publicar de graça (Vercel)
 

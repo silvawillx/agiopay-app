@@ -1,1 +1,38 @@
 @import "tailwindcss";
+
+/* base visual do AGIOPAY (as cores ficam nos tokens T do App.jsx).
+   Fica dentro de @layer base pra não brigar com as classes do Tailwind. */
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    margin: 0;
+    background: #F2F5F3;
+    color: #0F1B16;
+    font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  input:focus-visible, select:focus-visible, textarea:focus-visible {
+    outline: 2px solid #0F766E;
+    outline-offset: 1px;
+  }
+  button:focus-visible, a:focus-visible {
+    outline: 2px solid #0F766E;
+    outline-offset: 2px;
+  }
+  button:not(:disabled), a { cursor: pointer; }
+  ::selection { background: #CCEBE7; }
+}
+
+/* celular: campo com fonte < 16px faz o iPhone dar zoom ao tocar */
+@media (pointer: coarse) {
+  input, select, textarea { font-size: 16px !important; }
+}
+
+@media print {
+  body { background: #fff; }
+}
