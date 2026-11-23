@@ -15,11 +15,6 @@ alter table pagamentos
 alter table clientes
   add constraint clientes_nome_nao_vazio check (length(trim(nome)) > 0);
 
--- Permite que o usuário apague os próprios pagamentos (o app pede confirmação antes).
-create policy "pagamentos delete" on public.pagamentos
-  for delete to authenticated
-  using ((select auth.uid()) = user_id);
-
 -- Desempenho: (select auth.uid()) nas políticas de RLS e índices em chaves
 -- estrangeiras de pagamentos. Já aplicado no projeto em produção.
 -- alter policy "<nome>" on <tabela> using/with check ((select auth.uid()) = user_id);

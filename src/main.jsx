@@ -9,8 +9,9 @@ createRoot(document.getElementById('root')).render(
   </StrictMode>,
 )
 
-// registra o service worker mínimo (só pra habilitar "instalar app" no Android)
-if ('serviceWorker' in navigator) {
+// registra o service worker: habilita "instalar app" e faz o app abrir sem
+// internet. Só em produção — no `npm run dev` ele atrapalharia as atualizações.
+if ('serviceWorker' in navigator && import.meta.env.PROD) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/sw.js').catch(() => {
       // se falhar, sem problema — o app funciona normalmente sem ele
