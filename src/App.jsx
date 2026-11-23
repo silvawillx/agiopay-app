@@ -4220,8 +4220,9 @@ function EditClientForm({ initial, onClose, onSave }) {
   );
 }
 
-// resumo que muda enquanto o cobrador digita; fica fixo na parte de baixo da
-// tela, com uma frase pronta pra explicar ao devedor
+// resumo que muda enquanto o cobrador digita, logo abaixo dos campos (não fica
+// fixo na tela pra não cobrir o que está sendo digitado), com uma frase pronta
+// pra explicar ao devedor
 function ResumoAoVivo({ r }) {
   const [copiado, setCopiado] = useState(false);
   if (!r) return null;
@@ -4235,7 +4236,7 @@ function ResumoAoVivo({ r }) {
     }
   };
   return (
-    <div style={{ background: T.paperSoft, border: `1px solid ${T.line}`, boxShadow: T.shadow }} className="sticky bottom-2 z-10 rounded-xl p-3 mb-4 space-y-1.5">
+    <div style={{ background: T.paperSoft, border: `1px solid ${T.line}`, boxShadow: T.shadow }} className="rounded-xl p-3 mb-4 space-y-1.5">
       <p style={{ color: T.muted }} className="text-[11px] uppercase tracking-wide">Resumo ao vivo</p>
       {r.dica ? (
         <p style={{ color: T.muted }} className="text-xs">{r.dica}</p>
