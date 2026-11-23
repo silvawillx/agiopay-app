@@ -71,6 +71,8 @@ function calcularCliente(cliente) {
 const emptyClientLoanForm = {
   nome: "",
   telefone: "",
+  cpf: "",
+  endereco: "",
   observacoes: "",
   valor: "",
   taxaJuros: "30",
@@ -92,6 +94,8 @@ function fromRow(row) {
     id: row.id,
     nome: row.nome,
     telefone: row.telefone || "",
+    cpf: formatCpf(row.cpf),
+    endereco: row.endereco || "",
     observacoes: row.observacoes || "",
     emprestimos: (row.emprestimos || [])
       .map((l) => ({
@@ -257,7 +261,7 @@ function AppInner() {
   const addClientWithLoan = async (data) => {
     const { data: cliente, error: err1 } = await supabase
       .from("clientes")
-      .insert({ user_id: user.id, nome: data.nome, telefone: data.telefone || null, observacoes: data.observacoes || null })
+      .insert({ user_id: user.id, nome: data.nome, telefone: data.telefone || null, cpf: cpfDigits(data.cpf) || null, endereco: data.endereco?.trim() || null, observacoes: data.observacoes || null })
       .select()
       .single();
     if (err1) return flashError("salvar o cliente", err1);
@@ -315,7 +319,7 @@ function AppInner() {
   const editClient = async (id, data) => {
     const { error: err } = await supabase
       .from("clientes")
-      .update({ nome: data.nome, telefone: data.telefone || null, observacoes: data.observacoes || null })
+      .update({ nome: data.nome, telefone: data.telefone || null, cpf: cpfDigits(data.cpf) || null, endereco: data.endereco?.trim() || null, observacoes: data.observacoes || null })
       .eq("id", id);
     if (err) return flashError("editar o cliente", err);
     loadClients();
@@ -831,6 +835,8 @@ function ClientDossie({ client, onBack, onEditClient, onDeleteClient, onAddLoan,
           </div>
         </div>
         {client.telefone && <p style={{ color: T.muted }} className="text-sm mb-2">{client.telefone}</p>}
+        {client.cpf && <p style={{ color: T.muted }} className="text-sm mb-2">CPF {client.cpf}</p>}
+        {client.endereco && <p style={{ color: T.muted }} className="text-sm mb-2">{client.endereco}</p>}
 
         <div className="grid grid-cols-3 gap-2 mt-3">
           <MiniStat label="Emprestado" value={fmt(calc.totalEmprestado)} />
@@ -883,7 +889,7 @@ function ClientDossie({ client, onBack, onEditClient, onDeleteClient, onAddLoan,
 
       {editingClient && (
         <EditClientForm
-          initial={{ nome: client.nome, telefone: client.telefone, observacoes: client.observacoes }}
+          initial={{ nome: client.nome, telefone: client.telefone, cpf: client.cpf, endereco: client.endereco, observacoes: client.observacoes }}
           onClose={() => setEditingClient(false)}
           onSave={async (data) => { await onEditClient(data); setEditingClient(false); }}
         />
@@ -1898,6 +1904,50 @@ function IntegerField({ value, onChange, placeholder, className = "" }) {
   );
 }
 
+// CPF: guarda só os 11 dígitos no banco; mostra 000.000.000-00 na tela
+const cpfDigits = (v) => (v || "").replace(/\D/g, "").slice(0, 11);
+function formatCpf(v) {
+  const d = cpfDigits(v);
+  let out = d.slice(0, 3);
+  if (d.length > 3) out += "." + d.slice(3, 6);
+  if (d.length > 6) out += "." + d.slice(6, 9);
+  if (d.length > 9) out += "-" + d.slice(9, 11);
+  return out;
+}
+// campo opcional: vazio é válido; preenchido precisa ter dígitos verificadores corretos
+function cpfValido(v) {
+  const d = cpfDigits(v);
+  if (d.length === 0) return true;
+  if (d.length !== 11 || /^(\d)\1{10}$/.test(d)) return false;
+  const dv = (n) => {
+    let soma = 0;
+    for (let i = 0; i < n; i++) soma += parseInt(d[i], 10) * (n + 1 - i);
+    const r = (soma * 10) % 11;
+    return r === 10 ? 0 : r;
+  };
+  return dv(9) === parseInt(d[9], 10) && dv(10) === parseInt(d[10], 10);
+}
+
+function CpfField({ value, onChange }) {
+  const invalido = cpfDigits(value).length > 0 && !cpfValido(value);
+  return (
+    <>
+      <input
+        style={inputStyle}
+        type="text"
+        inputMode="numeric"
+        placeholder="000.000.000-00"
+        className="w-full rounded-lg px-3 py-2.5 text-sm outline-none"
+        value={value}
+        onChange={(e) => onChange(formatCpf(e.target.value))}
+      />
+      {invalido && cpfDigits(value).length === 11 && (
+        <p style={{ color: T.red }} className="text-xs mt-1">CPF inválido — confira os números.</p>
+      )}
+    </>
+  );
+}
+
 // telefone celular brasileiro: DDD (2 dígitos) + 9 + 8 dígitos = 11 no total,
 // formata sozinho enquanto digita e não deixa passar de 11 números
 function PhoneField({ value, onChange, className = "" }) {
@@ -2015,6 +2065,7 @@ function ClientLoanForm({ title, initial, onClose, onSave, presets = [], onSaveP
 
   const faltando = [];
   if (!form.nome.trim()) faltando.push("nome");
+  if (!cpfValido(form.cpf)) faltando.push("CPF válido");
   if (!(parseFloat(form.valor) > 0)) faltando.push("valor emprestado");
   if (!(parseFloat(form.taxaJuros) >= 0)) faltando.push("juros");
   if (!(parseInt(form.prazoDias || "0", 10) > 0)) faltando.push("prazo");
@@ -2051,6 +2102,14 @@ function ClientLoanForm({ title, initial, onClose, onSave, presets = [], onSaveP
           </Field>
           <Field label="Telefone (opcional)">
             <PhoneField value={form.telefone} onChange={(v) => setForm({ ...form, telefone: v })} />
+          </Field>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3">
+          <Field label="CPF (opcional)">
+            <CpfField value={form.cpf} onChange={(v) => setForm({ ...form, cpf: v })} />
+          </Field>
+          <Field label="Endereço (opcional)">
+            <input style={inputStyle} className="w-full rounded-lg px-3 py-2.5 text-sm outline-none" value={form.endereco} onChange={(e) => setForm({ ...form, endereco: e.target.value })} placeholder="Rua, número, bairro, cidade" />
           </Field>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3">
@@ -2180,7 +2239,7 @@ function LoanForm({ title, initial, onClose, onSave, presets = [], onSavePreset,
 function EditClientForm({ initial, onClose, onSave }) {
   const [form, setForm] = useState(initial);
   const [saving, setSaving] = useState(false);
-  const valid = form.nome.trim().length > 0;
+  const valid = form.nome.trim().length > 0 && cpfValido(form.cpf);
   const handleSave = async () => { setSaving(true); await onSave(form); setSaving(false); };
 
   return (
@@ -2196,6 +2255,12 @@ function EditClientForm({ initial, onClose, onSave }) {
         </Field>
         <Field label="Telefone (opcional)">
           <PhoneField value={form.telefone} onChange={(v) => setForm({ ...form, telefone: v })} />
+        </Field>
+        <Field label="CPF (opcional)">
+          <CpfField value={form.cpf} onChange={(v) => setForm({ ...form, cpf: v })} />
+        </Field>
+        <Field label="Endereço (opcional)">
+          <input style={inputStyle} className="w-full rounded-lg px-3 py-2.5 text-sm outline-none" value={form.endereco} onChange={(e) => setForm({ ...form, endereco: e.target.value })} placeholder="Rua, número, bairro, cidade" />
         </Field>
         <Field label="Observações (opcional)">
           <textarea style={inputStyle} rows={3} className="w-full rounded-lg px-3 py-2.5 text-sm outline-none resize-none" value={form.observacoes || ""} onChange={(e) => setForm({ ...form, observacoes: e.target.value })} />
@@ -2229,6 +2294,8 @@ function ReportClientBlock({ client }) {
         </span>
       </div>
       {client.telefone && <p style={{ fontSize: 11, color: "#5c5540", margin: "0 0 4px" }}>{client.telefone}</p>}
+      {client.cpf && <p style={{ fontSize: 11, color: "#5c5540", margin: "0 0 4px" }}>CPF {client.cpf}</p>}
+      {client.endereco && <p style={{ fontSize: 11, color: "#5c5540", margin: "0 0 4px" }}>{client.endereco}</p>}
       {client.observacoes && (
         <div style={{ background: "#F1EAD6", borderRadius: 6, padding: "6px 10px", margin: "6px 0 10px" }}>
           <p style={{ fontSize: 10, fontWeight: 600, color: "#5c5540", margin: "0 0 2px", textTransform: "uppercase" }}>Observações</p>

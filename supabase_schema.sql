@@ -12,7 +12,9 @@ create table clientes (
   nome text not null check (length(trim(nome)) > 0),
   telefone text,
   observacoes text,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  cpf text check (cpf is null or cpf ~ '^[0-9]{11}$'),  -- opcional, só dígitos
+  endereco text                                          -- opcional
 );
 
 create table emprestimos (

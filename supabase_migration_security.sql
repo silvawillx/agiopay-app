@@ -26,3 +26,7 @@ create policy "pagamentos delete" on public.pagamentos
 -- (veja as expressões finais de cada política em supabase_schema.sql)
 create index if not exists idx_pagamentos_estornado_por on pagamentos (estornado_por);
 create index if not exists idx_pagamentos_registrado_por on pagamentos (registrado_por);
+
+-- Cadastro de cliente: CPF (só 11 dígitos) e endereço, ambos opcionais.
+alter table clientes add column if not exists cpf text, add column if not exists endereco text;
+alter table clientes add constraint clientes_cpf_formato check (cpf is null or cpf ~ '^[0-9]{11}$');
