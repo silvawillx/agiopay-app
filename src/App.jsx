@@ -339,8 +339,9 @@ function AppInner() {
   };
 
   const removePayment = async (paymentId) => {
-    const { error: err } = await supabase.from("pagamentos").delete().eq("id", paymentId);
+    const { data: removidos, error: err } = await supabase.from("pagamentos").delete().eq("id", paymentId).select("id");
     if (err) return flashError("remover o pagamento", err);
+    if (!removidos || removidos.length === 0) return flashError("remover o pagamento", new Error("O pagamento não foi removido (sem permissão ou já não existe)."));
     loadClients();
   };
 
@@ -1065,7 +1066,7 @@ function PaymentRow({ payment, onEdit, onRemove }) {
           title="Remover este pagamento?"
           message={`Isso apaga o registro de ${fmt(payment.valor)} recebido em ${new Date(payment.data + "T00:00:00").toLocaleDateString("pt-BR")}. O saldo do empréstimo volta a incluir esse valor.`}
           onCancel={() => setConfirmRemove(false)}
-          onConfirm={onRemove}
+          onConfirm={() => { setConfirmRemove(false); onRemove(); }}
         />
       )}
     </div>
