@@ -33,3 +33,7 @@ alter table emprestimos add column if not exists juros_diario boolean not null d
 alter table emprestimos
   add column if not exists parcelas_mensais boolean not null default false,
   add column if not exists juros_parcela numeric(6,2) check (juros_parcela is null or juros_parcela >= 0);
+
+-- Juros diário: % por dia de cobrança, até o teto (taxa_juros). Sem taxa_dia = modelo antigo
+-- (juro total dividido igualmente em prazo_dias dias).
+alter table emprestimos add column if not exists taxa_dia numeric(6,2) check (taxa_dia is null or taxa_dia > 0);
