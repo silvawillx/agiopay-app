@@ -25,3 +25,6 @@ create index if not exists idx_pagamentos_registrado_por on pagamentos (registra
 -- Cadastro de cliente: CPF (só 11 dígitos) e endereço, ambos opcionais.
 alter table clientes add column if not exists cpf text, add column if not exists endereco text;
 alter table clientes add constraint clientes_cpf_formato check (cpf is null or cpf ~ '^[0-9]{11}$');
+
+-- Empréstimo de juros diário: o juro soma por dia de cobrança até o total combinado.
+alter table emprestimos add column if not exists juros_diario boolean not null default false;

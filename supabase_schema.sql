@@ -28,6 +28,7 @@ create table emprestimos (
   garantia text,
   dias_cobranca smallint[],            -- null = empréstimo de pagamento único; 0=dom ... 6=sáb
   pular_feriados boolean not null default true,
+  juros_diario boolean not null default false,  -- true: juro soma por dia de cobrança até o total (prazo_dias = dias com juros, taxa_juros = juro total %)
   created_at timestamptz not null default now()
 );
 
