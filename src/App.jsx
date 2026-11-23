@@ -3865,35 +3865,67 @@ function LoanFields({ form, setForm, editando, presets = [], onSavePreset, onRem
     if (!mensal || editando) return null;
     const n = parseInt(form.qtdParcelas || "0", 10);
     const valor = parseFloat(form.valor);
-    const taxa = parseFloat(form.taxaJuros);
-    if (!(n > 0 && n <= 120) || !(valor > 0) || !(taxa >= 0) || !form.dataEmprestimo) return null;
+    const taxa = parseFloat(form.taxaJuros) || 0;
+    if (!(valor > 0)) return null;
+    if (!(n > 0 && n <= 120)) return { dica: "Informe a quantidade de parcelas (1 a 120) para ver o resumo." };
+    if (!form.dataEmprestimo) return { dica: "Informe a data do empréstimo." };
     const primeira = form.primeiraParcela || addMeses(form.dataEmprestimo, 1);
-    return { ...calcularParcelasMensais({ valor, taxaMensal: taxa, n, jurosParcela: parseFloat(form.jurosParcela) || 0, primeira }), n, primeira };
+    const c = calcularParcelasMensais({ valor, taxaMensal: taxa, n, jurosParcela: parseFloat(form.jurosParcela) || 0, primeira });
+    const ult = c.valores[n - 1];
+    return {
+      linhas: [
+        { label: `Juros do mês (${taxa}% × ${n})`, value: fmt(c.jurosMes) },
+        ...(c.extra > 0 ? [{ label: `Juros da parcela (${form.jurosParcela}%)`, value: fmt(c.extra) }] : []),
+        { label: `Parcela (${n}×)`, value: fmt(c.cada), bold: true },
+        { label: "Total a receber", value: fmt(c.total), bold: true },
+        { label: "Primeira e última parcela", value: `${fmtData(c.datas[0])} · ${fmtData(c.datas[n - 1])}` },
+      ],
+      frase: `Empréstimo de ${fmt(valor)} em ${n}× de ${fmt(c.cada)}${ult === c.cada ? "" : ` (a última de ${fmt(ult)})`}, de ${fmtData(c.datas[0])} a ${fmtData(c.datas[n - 1])}. Total a pagar: ${fmt(c.total)} (${fmt(c.total - valor)} de juros).`,
+    };
   }, [mensal, editando, form.qtdParcelas, form.valor, form.taxaJuros, form.jurosParcela, form.dataEmprestimo, form.primeiraParcela]);
   const prevDiario = useMemo(() => {
     if (!diario) return null;
     const n = parseInt(form.qtdParcelas || "0", 10);
-    const taxa = parseFloat(form.taxaJuros);
+    const taxa = parseFloat(form.taxaJuros) || 0;
     const valor = parseFloat(form.valor);
-    if (!(n > 0 && n <= 400) || !(taxa >= 0) || !(valor > 0) || !form.diasCobranca?.length) return null;
+    if (!(valor > 0)) return null;
+    if (!form.diasCobranca?.length) return { dica: "Marque pelo menos um dia de cobrança." };
+    if (!(n > 0 && n <= 400)) return { dica: "Informe quantos dias terão juros (1 a 400) para ver o resumo." };
     const datas = datasJurosDiario(form.dataEmprestimo, form.diasCobranca, form.pularFeriados, n);
-    if (datas.length !== n) return null;
+    if (datas.length !== n) return { dica: "Confira a data e os dias de cobrança." };
     const jurosTotal = Math.round(valor * taxa) / 100;
-    return { jurosTotal, jurosDia: jurosTotal / n, total: valor + jurosTotal, ultima: datas[datas.length - 1], n };
+    const jurosDia = jurosTotal / n;
+    const ultima = datas[datas.length - 1];
+    return {
+      linhas: [
+        { label: "Juro total", value: fmt(jurosTotal), color: T.greenSoft },
+        { label: `Juro por dia (${n} dias)`, value: fmt(jurosDia) },
+        { label: "Total a receber no fim", value: fmt(valor + jurosTotal), bold: true },
+        { label: "Juro completo em", value: fmtData(ultima) },
+      ],
+      frase: `Empréstimo de ${fmt(valor)}. O juro soma ${fmt(jurosDia)} por dia de cobrança (${rotuloDias(form.diasCobranca)}${form.pularFeriados ? ", sem feriados" : ""}), por ${n} dias, até chegar em ${fmt(jurosTotal)} em ${fmtData(ultima)}. Total no fim: ${fmt(valor + jurosTotal)}. Pode pagar quando e quanto puder.`,
+    };
   }, [diario, form.qtdParcelas, form.taxaJuros, form.valor, form.dataEmprestimo, form.diasCobranca, form.pularFeriados]);
   const { datas, geradas, puladas } = useMemo(() => (parcelado && !editando ? datasDoForm(form) : { datas: [], geradas: [], puladas: [] }), [form, parcelado, editando]);
 
   const previewUnico = useMemo(() => {
     if (parcelado || diario || mensal) return null;
     const valor = parseFloat(form.valor);
-    const taxa = parseFloat(form.taxaJuros);
-    if (!valor || !taxa || !form.dataEmprestimo) return null;
+    const taxa = parseFloat(form.taxaJuros) || 0;
+    if (!(valor > 0) || !form.dataEmprestimo) return null;
     const prazoDias = parseInt(form.prazoDias || "30", 10) || 30;
     // mesma contagem do calcularEmprestimo: dias inteiros de calendário
     const diasDecorridos = Math.max(0, diasEntreISO(form.dataEmprestimo, hojeISO()));
     const periodos = Math.max(1, Math.ceil(diasDecorridos / prazoDias));
     const juros = valor * (taxa / 100) * periodos;
-    return { periodos, prazoDias, juros, total: valor + juros };
+    const jurosPeriodo = valor * (taxa / 100);
+    return {
+      linhas: [
+        { label: `Juros (${periodos} período${periodos > 1 ? "s" : ""} de ${prazoDias}d)`, value: fmt(juros), color: T.greenSoft },
+        { label: "Total devido hoje", value: fmt(valor + juros), bold: true },
+      ],
+      frase: `Empréstimo de ${fmt(valor)} com juros de ${taxa}% a cada ${prazoDias} dias. Até ${fmtData(addDias(form.dataEmprestimo, prazoDias))} deve ${fmt(valor + jurosPeriodo)}; passando disso, soma mais ${fmt(jurosPeriodo)} a cada ${prazoDias} dias. Pode pagar quando e quanto puder.`,
+    };
   }, [parcelado, diario, mensal, form.valor, form.taxaJuros, form.dataEmprestimo, form.prazoDias]);
 
   const valor = parseFloat(form.valor) || 0;
@@ -3950,15 +3982,7 @@ function LoanFields({ form, setForm, editando, presets = [], onSavePreset, onRem
                 O juro do mês é simples: % ao mês × número de meses, sobre o valor emprestado. O juro da parcela, se você preencher, soma mais esse % em cada parcela. As parcelas caem no mesmo dia de cada mês e você pode mudar valor e data de cada uma depois.
               </p>
 
-              {prevMensal && (
-                <div style={{ background: T.paperSoft, border: `1px solid ${T.line}` }} className="rounded-xl p-3 mb-4 space-y-1.5">
-                  <Row label={`Juros do mês (${form.taxaJuros || 0}% × ${prevMensal.n})`} value={fmt(prevMensal.jurosMes)} />
-                  {prevMensal.extra > 0 && <Row label={`Juros da parcela (${form.jurosParcela}%)`} value={fmt(prevMensal.extra)} />}
-                  <Row label={`Parcela (${prevMensal.n}×)`} value={fmt(prevMensal.cada)} bold />
-                  <Row label="Total a receber" value={fmt(prevMensal.total)} bold />
-                  <Row label="Primeira e última parcela" value={`${fmtData(prevMensal.datas[0])} · ${fmtData(prevMensal.datas[prevMensal.n - 1])}`} />
-                </div>
-              )}
+              <ResumoAoVivo r={prevMensal} />
             </>
           )}
         </>
@@ -3993,14 +4017,7 @@ function LoanFields({ form, setForm, editando, presets = [], onSavePreset, onRem
             O juro soma um pouco por dia, só nos dias marcados, até chegar no juro total. O cliente paga quando e quanto puder.
           </p>
 
-          {prevDiario && (
-            <div style={{ background: T.paperSoft, border: `1px solid ${T.line}` }} className="rounded-xl p-3 mb-4 space-y-1.5">
-              <Row label="Juro total" value={fmt(prevDiario.jurosTotal)} color={T.greenSoft} />
-              <Row label={`Juro por dia (${prevDiario.n} dias)`} value={fmt(prevDiario.jurosDia)} />
-              <Row label="Total a receber no fim" value={fmt(prevDiario.total)} bold />
-              <Row label="Juro completo em" value={fmtData(prevDiario.ultima)} />
-            </div>
-          )}
+          <ResumoAoVivo r={prevDiario} />
         </>
       ) : parcelado ? (
         <>
@@ -4080,12 +4097,7 @@ function LoanFields({ form, setForm, editando, presets = [], onSavePreset, onRem
             podeSalvar={parseFloat(form.taxaJuros) >= 0 && parseInt(form.prazoDias || "0", 10) > 0}
           />
 
-          {previewUnico && (
-            <div style={{ background: T.paperSoft, border: `1px solid ${T.line}` }} className="rounded-xl p-3 mb-4 space-y-1.5">
-              <Row label={`Juros (${previewUnico.periodos} período${previewUnico.periodos > 1 ? "s" : ""} de ${previewUnico.prazoDias}d)`} value={fmt(previewUnico.juros)} color={T.greenSoft} />
-              <Row label="Total devido hoje" value={fmt(previewUnico.total)} bold />
-            </div>
-          )}
+          <ResumoAoVivo r={previewUnico} />
         </>
       )}
 
@@ -4204,6 +4216,43 @@ function EditClientForm({ initial, onClose, onSave }) {
         </Field>
         <SubmitButton valid={valid} busy={saving} label="Salvar" busyLabel="Salvando…" missing="nome" onClick={handleSave} className="mt-2" />
       </div>
+    </div>
+  );
+}
+
+// resumo que muda enquanto o cobrador digita; fica fixo na parte de baixo da
+// tela, com uma frase pronta pra explicar ao devedor
+function ResumoAoVivo({ r }) {
+  const [copiado, setCopiado] = useState(false);
+  if (!r) return null;
+  const copiar = async () => {
+    try {
+      await navigator.clipboard.writeText(r.frase);
+      setCopiado(true);
+      setTimeout(() => setCopiado(false), 2000);
+    } catch {
+      // sem permissão pra copiar: a frase continua na tela pra copiar na mão
+    }
+  };
+  return (
+    <div style={{ background: T.paperSoft, border: `1px solid ${T.line}`, boxShadow: T.shadow }} className="sticky bottom-2 z-10 rounded-xl p-3 mb-4 space-y-1.5">
+      <p style={{ color: T.muted }} className="text-[11px] uppercase tracking-wide">Resumo ao vivo</p>
+      {r.dica ? (
+        <p style={{ color: T.muted }} className="text-xs">{r.dica}</p>
+      ) : (
+        <>
+          {r.linhas.map((l) => (
+            <Row key={l.label} label={l.label} value={l.value} bold={l.bold} color={l.color} />
+          ))}
+          <div style={{ borderTop: `1px solid ${T.line}` }} className="pt-2 mt-1">
+            <p style={{ color: T.muted }} className="text-[11px] uppercase tracking-wide mb-1">O que falar pro devedor</p>
+            <p style={{ color: T.textPaper }} className="text-xs leading-relaxed">{r.frase}</p>
+            <button type="button" onClick={copiar} style={{ color: T.green }} className="text-xs font-medium mt-1.5">
+              {copiado ? "Copiado ✓" : "Copiar texto"}
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
