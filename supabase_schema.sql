@@ -1,14 +1,10 @@
 -- AGIOPAY — schema Supabase (Postgres) com Row Level Security
--- Versão 2: cada cliente pode ter VÁRIOS empréstimos ao longo do tempo (dossiê).
+-- Versão 3: espelha o banco em produção (inclui parcelas, estorno de pagamentos
+-- e opções de cobrança). Cada cliente pode ter VÁRIOS empréstimos (dossiê).
 --
--- Se você já rodou a versão 1 deste schema antes (tabelas clientes/pagamentos
--- antigas, com o empréstimo dentro da própria tabela clientes), rode primeiro:
---
---   drop table if exists pagamentos cascade;
---   drop table if exists clientes cascade;
---
--- e depois cole e rode tudo abaixo. Isso apaga dados de teste antigos —
--- normal nessa fase, não faça isso depois que tiver dados reais sem backup.
+-- Use este arquivo para criar um projeto novo do zero. Num banco que já tem
+-- dados, NÃO rode isto: use as migrações incrementais em
+-- supabase_migration_security.sql.
 
 create table clientes (
   id uuid primary key default gen_random_uuid(),
@@ -28,6 +24,17 @@ create table emprestimos (
   prazo_dias int not null default 30 check (prazo_dias > 0),
   data_emprestimo date not null,
   garantia text,
+  created_at timestamptz not null default now(),
+  dias_cobranca int[],
+  pular_feriados boolean not null default true
+);
+
+create table parcelas (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  emprestimo_id uuid not null references emprestimos(id) on delete cascade,
+  vencimento date not null,
+  valor numeric(12,2) not null check (valor > 0),
   created_at timestamptz not null default now()
 );
 
@@ -37,31 +44,53 @@ create table pagamentos (
   emprestimo_id uuid not null references emprestimos(id) on delete cascade,
   valor numeric(12,2) not null check (valor > 0),
   data date not null default current_date,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  parcela_id uuid references parcelas(id) on delete set null,
+  estornado_em timestamptz,
+  estornado_por uuid references auth.users(id) on delete set null,
+  estornado_motivo text,
+  registrado_por uuid default auth.uid() references auth.users(id) on delete set null
 );
 
 -- ---- Row Level Security: cada usuário só acessa o que é dele ----
+-- (select auth.uid()) evita reavaliar a função a cada linha.
 alter table clientes enable row level security;
 alter table emprestimos enable row level security;
+alter table parcelas enable row level security;
 alter table pagamentos enable row level security;
 
-create policy "clientes select" on clientes for select using (auth.uid() = user_id);
-create policy "clientes insert" on clientes for insert with check (auth.uid() = user_id);
-create policy "clientes update" on clientes for update using (auth.uid() = user_id);
-create policy "clientes delete" on clientes for delete using (auth.uid() = user_id);
+create policy "clientes select" on clientes for select using ((select auth.uid()) = user_id);
+create policy "clientes insert" on clientes for insert with check ((select auth.uid()) = user_id);
+create policy "clientes update" on clientes for update using ((select auth.uid()) = user_id);
+create policy "clientes delete" on clientes for delete using ((select auth.uid()) = user_id);
 
-create policy "emprestimos select" on emprestimos for select using (auth.uid() = user_id);
-create policy "emprestimos insert" on emprestimos for insert with check (auth.uid() = user_id);
-create policy "emprestimos update" on emprestimos for update using (auth.uid() = user_id);
-create policy "emprestimos delete" on emprestimos for delete using (auth.uid() = user_id);
+create policy "emprestimos select" on emprestimos for select using ((select auth.uid()) = user_id);
+create policy "emprestimos insert" on emprestimos for insert with check ((select auth.uid()) = user_id);
+create policy "emprestimos update" on emprestimos for update using ((select auth.uid()) = user_id);
+create policy "emprestimos delete" on emprestimos for delete using ((select auth.uid()) = user_id);
 
-create policy "pagamentos select" on pagamentos for select using (auth.uid() = user_id);
-create policy "pagamentos insert" on pagamentos for insert with check (auth.uid() = user_id);
-create policy "pagamentos delete" on pagamentos for delete using (auth.uid() = user_id);
+create policy "parcelas select" on parcelas for select using ((select auth.uid()) = user_id);
+create policy "parcelas insert" on parcelas for insert with check (
+  ((select auth.uid()) = user_id)
+  and exists (select 1 from emprestimos e where e.id = parcelas.emprestimo_id and e.user_id = (select auth.uid()))
+);
+create policy "parcelas update" on parcelas for update using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+create policy "parcelas delete" on parcelas for delete using ((select auth.uid()) = user_id);
 
--- índices
+create policy "pagamentos select" on pagamentos for select using ((select auth.uid()) = user_id);
+create policy "pagamentos insert" on pagamentos for insert with check ((select auth.uid()) = user_id);
+create policy "pagamentos update" on pagamentos for update using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+create policy "pagamentos delete" on pagamentos for delete to authenticated using ((select auth.uid()) = user_id);
+
+-- ---- Índices ----
+create index idx_clientes_user on clientes(user_id);
 create index idx_emprestimos_cliente on emprestimos(cliente_id);
 create index idx_emprestimos_user on emprestimos(user_id);
+create index idx_parcelas_emprestimo on parcelas(emprestimo_id);
+create index idx_parcelas_user_venc on parcelas(user_id, vencimento);
+create index idx_pagamentos_data on pagamentos(user_id, data);
 create index idx_pagamentos_emprestimo on pagamentos(emprestimo_id);
+create index idx_pagamentos_estornado_por on pagamentos(estornado_por);
+create index idx_pagamentos_parcela on pagamentos(parcela_id);
+create index idx_pagamentos_registrado_por on pagamentos(registrado_por);
 create index idx_pagamentos_user on pagamentos(user_id);
-create index idx_clientes_user on clientes(user_id);

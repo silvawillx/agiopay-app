@@ -19,3 +19,10 @@ alter table clientes
 create policy "pagamentos delete" on public.pagamentos
   for delete to authenticated
   using ((select auth.uid()) = user_id);
+
+-- Desempenho: (select auth.uid()) nas políticas de RLS e índices em chaves
+-- estrangeiras de pagamentos. Já aplicado no projeto em produção.
+-- alter policy "<nome>" on <tabela> using/with check ((select auth.uid()) = user_id);
+-- (veja as expressões finais de cada política em supabase_schema.sql)
+create index if not exists idx_pagamentos_estornado_por on pagamentos (estornado_por);
+create index if not exists idx_pagamentos_registrado_por on pagamentos (registrado_por);
