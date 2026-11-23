@@ -28,3 +28,8 @@ alter table clientes add constraint clientes_cpf_formato check (cpf is null or c
 
 -- Empréstimo de juros diário: o juro soma por dia de cobrança até o total combinado.
 alter table emprestimos add column if not exists juros_diario boolean not null default false;
+
+-- Parcelado mensal: juro do mês + % opcional em cada parcela.
+alter table emprestimos
+  add column if not exists parcelas_mensais boolean not null default false,
+  add column if not exists juros_parcela numeric(6,2) check (juros_parcela is null or juros_parcela >= 0);

@@ -108,6 +108,15 @@ function addDias(iso, n) {
   d.setDate(d.getDate() + n);
   return isoLocal(d);
 }
+// soma `n` meses mantendo o mesmo dia (31 → último dia do mês que não tem 31)
+function addMeses(iso, n) {
+  const d = parseISO(iso);
+  const dia = d.getDate();
+  const alvo = new Date(d.getFullYear(), d.getMonth() + n, 1);
+  const ultimo = new Date(alvo.getFullYear(), alvo.getMonth() + 1, 0).getDate();
+  alvo.setDate(Math.min(dia, ultimo));
+  return isoLocal(alvo);
+}
 function diasEntreISO(a, b) {
   return Math.round((parseISO(b) - parseISO(a)) / 86400000);
 }
@@ -229,6 +238,19 @@ function calcularEmprestimoParcelado(l) {
     diasAtraso,
     atrasado: status === "negativo" && atrasadas.length > 0,
   };
+}
+
+// parcelado mensal: juro do mês (simples, % ao mês × nº de meses) sobre o valor
+// emprestado, e opcionalmente mais um % em cada parcela. A última parcela
+// absorve o arredondamento para a soma bater certinho em centavos.
+function calcularParcelasMensais({ valor, taxaMensal, n, jurosParcela, primeira }) {
+  const jurosMes = Math.round(valor * (taxaMensal || 0) * n) / 100;
+  const totalBase = valor + jurosMes;
+  const total = Math.round(totalBase * (1 + (jurosParcela || 0) / 100) * 100) / 100;
+  const cada = Math.round((total / n) * 100) / 100;
+  const valores = Array.from({ length: n }, (_, i) => (i === n - 1 ? Math.round((total - cada * (n - 1)) * 100) / 100 : cada));
+  const datas = Array.from({ length: n }, (_, i) => addMeses(primeira, i));
+  return { jurosMes, totalBase, total, cada, valores, datas, extra: Math.round((total - totalBase) * 100) / 100 };
 }
 
 // datas em que o juro diário soma: os próximos `n` dias de cobrança depois do empréstimo
@@ -359,6 +381,8 @@ function novoEmprestimoForm() {
     dataEmprestimo: hoje,
     garantia: "",
     valorParcela: "",
+    jurosParcela: "", // parcelado mensal: % extra em cada parcela (opcional)
+    primeiraParcela: "", // parcelado mensal: vazio = 1 mês depois do empréstimo
     qtdParcelas: "30", // no juro diário: quantos dias de cobrança somam juro
     diasCobranca: DIAS_SEG_SAB,
     pularFeriados: true,
@@ -404,6 +428,11 @@ function validarEmprestimo(f, editando) {
       if (!(n > 0 && n <= 400)) falta.push("quantidade de parcelas (1 a 400)");
       else if (f.diasCobranca?.length && datasDoForm(f).datas.length !== n) falta.push("datas das parcelas");
     }
+  } else if (f.tipo === "mensal") {
+    const n = parseInt(f.qtdParcelas || "0", 10);
+    if (!(parseFloat(f.taxaJuros) >= 0)) falta.push("juros ao mês");
+    if (f.jurosParcela !== "" && !(parseFloat(f.jurosParcela) >= 0)) falta.push("juros da parcela");
+    if (!editando && !(n > 0 && n <= 120)) falta.push("quantidade de parcelas (1 a 120)");
   } else if (f.tipo === "diario") {
     const n = parseInt(f.qtdParcelas || "0", 10);
     if (!(parseFloat(f.taxaJuros) >= 0)) falta.push("juros total");
@@ -436,7 +465,9 @@ function fromRow(row, parcelasPorEmprestimo = {}) {
         dataEmprestimo: l.data_emprestimo,
         garantia: l.garantia || "",
         jurosDiario: l.juros_diario === true,
-        parcelado: Array.isArray(l.dias_cobranca) && l.juros_diario !== true,
+        parcelasMensais: l.parcelas_mensais === true,
+        jurosParcela: l.juros_parcela == null ? 0 : Number(l.juros_parcela),
+        parcelado: (Array.isArray(l.dias_cobranca) && l.juros_diario !== true) || l.parcelas_mensais === true,
         diasCobranca: l.dias_cobranca || [],
         pularFeriados: l.pular_feriados !== false,
         parcelas: (parcelasPorEmprestimo[l.id] || [])
@@ -896,6 +927,36 @@ function AppInner() {
   // devolve true se deu certo
   const inserirEmprestimo = async (clienteId, data) => {
     const valor = parseFloat(data.valor);
+    if (data.tipo === "mensal") {
+      const n = parseInt(data.qtdParcelas || "0", 10);
+      const primeira = data.primeiraParcela || addMeses(data.dataEmprestimo, 1);
+      const c = calcularParcelasMensais({ valor, taxaMensal: parseFloat(data.taxaJuros), n, jurosParcela: parseFloat(data.jurosParcela) || 0, primeira });
+      const { data: emp, error: err } = await supabase
+        .from("emprestimos")
+        .insert({
+          user_id: user.id,
+          cliente_id: clienteId,
+          valor,
+          taxa_juros: parseFloat(data.taxaJuros),
+          prazo_dias: Math.max(1, diasEntreISO(data.dataEmprestimo, c.datas[c.datas.length - 1])),
+          data_emprestimo: data.dataEmprestimo,
+          garantia: data.garantia || null,
+          parcelas_mensais: true,
+          juros_parcela: data.jurosParcela === "" ? null : parseFloat(data.jurosParcela),
+        })
+        .select()
+        .single();
+      if (err) { flashError("salvar o empréstimo", err); return false; }
+      const { error: errP } = await supabase.from("parcelas").insert(
+        c.datas.map((d, i) => ({ user_id: user.id, emprestimo_id: emp.id, vencimento: d, valor: c.valores[i] }))
+      );
+      if (errP) {
+        await supabase.from("emprestimos").delete().eq("id", emp.id);
+        flashError("gerar as parcelas", errP);
+        return false;
+      }
+      return true;
+    }
     if (data.tipo === "diario") {
       const { error: err } = await supabase.from("emprestimos").insert({
         user_id: user.id,
@@ -992,6 +1053,8 @@ function AppInner() {
       // nos parcelados, datas e valores das parcelas são editados parcela por parcela
       update.dias_cobranca = data.diasCobranca;
       update.pular_feriados = data.pularFeriados;
+    } else if (data.tipo === "mensal") {
+      // parcelas já foram geradas: valor e data de cada uma se editam parcela por parcela
     } else if (data.tipo === "diario") {
       update.taxa_juros = parseFloat(data.taxaJuros);
       update.prazo_dias = parseInt(data.qtdParcelas || "30", 10);
@@ -1887,7 +1950,8 @@ function ClientDossie({ client, onBack, onEditClient, onDeleteClient, onAddLoan,
           editando
           initial={{
             ...novoEmprestimoForm(),
-            tipo: editingLoan.parcelado ? "parcelado" : editingLoan.jurosDiario ? "diario" : "unico",
+            tipo: editingLoan.parcelasMensais ? "mensal" : editingLoan.parcelado ? "parcelado" : editingLoan.jurosDiario ? "diario" : "unico",
+            jurosParcela: editingLoan.jurosParcela ? String(editingLoan.jurosParcela) : "",
             qtdParcelas: String(editingLoan.prazoDias),
             valor: String(editingLoan.valor),
             taxaJuros: String(editingLoan.taxaJuros),
@@ -2013,7 +2077,8 @@ function LoanCard({ loan, expanded, onToggle, onPay, onEditPayment, onRemovePaym
             )}
             <Row label="Já pago" value={fmt(calc.totalPago)} color={T.greenSoft} />
             <Row label="Saldo em aberto" value={positivo ? "Quitado" : fmt(calc.saldo)} color={positivo ? T.green : T.red} bold />
-            {(calc.parcelado || calc.diario) && <Row label="Cobrança" value={rotuloDias(loan.diasCobranca) + (loan.pularFeriados ? ", sem feriados" : "")} />}
+            {loan.parcelasMensais && <Row label="Juros" value={`${loan.taxaJuros}% ao mês` + (loan.jurosParcela > 0 ? ` + ${loan.jurosParcela}% na parcela` : "")} />}
+            {(calc.diario || (calc.parcelado && !loan.parcelasMensais)) && <Row label="Cobrança" value={rotuloDias(loan.diasCobranca) + (loan.pularFeriados ? ", sem feriados" : "")} />}
             {loan.garantia && <Row label="Garantia" value={loan.garantia} />}
           </div>
 
@@ -2022,7 +2087,7 @@ function LoanCard({ loan, expanded, onToggle, onPay, onEditPayment, onRemovePaym
               <button onClick={() => setConfirmQuitar(true)} style={{ background: T.green, color: T.onColor }} className="flex items-center gap-1 rounded-full px-3.5 py-1.5 text-xs font-medium">
                 <CheckCheck size={13} /> Quitar empréstimo
               </button>
-              {calc.parcelado && calc.atrasadas.length > 0 && (
+              {calc.parcelado && !loan.parcelasMensais && calc.atrasadas.length > 0 && (
                 <button onClick={abrirReagendar} style={{ background: T.red, color: T.onColor }} className="flex items-center gap-1 rounded-full px-3.5 py-1.5 text-xs font-medium">
                   <CalendarClock size={13} /> Reagendar atrasadas ({calc.atrasadas.length})
                 </button>
@@ -3795,6 +3860,16 @@ function LoanFields({ form, setForm, editando, presets = [], onSavePreset, onRem
   const set = (campo) => (v) => setForm((f) => ({ ...f, [campo]: v }));
   const parcelado = form.tipo === "parcelado";
   const diario = form.tipo === "diario";
+  const mensal = form.tipo === "mensal";
+  const prevMensal = useMemo(() => {
+    if (!mensal || editando) return null;
+    const n = parseInt(form.qtdParcelas || "0", 10);
+    const valor = parseFloat(form.valor);
+    const taxa = parseFloat(form.taxaJuros);
+    if (!(n > 0 && n <= 120) || !(valor > 0) || !(taxa >= 0) || !form.dataEmprestimo) return null;
+    const primeira = form.primeiraParcela || addMeses(form.dataEmprestimo, 1);
+    return { ...calcularParcelasMensais({ valor, taxaMensal: taxa, n, jurosParcela: parseFloat(form.jurosParcela) || 0, primeira }), n, primeira };
+  }, [mensal, editando, form.qtdParcelas, form.valor, form.taxaJuros, form.jurosParcela, form.dataEmprestimo, form.primeiraParcela]);
   const prevDiario = useMemo(() => {
     if (!diario) return null;
     const n = parseInt(form.qtdParcelas || "0", 10);
@@ -3809,7 +3884,7 @@ function LoanFields({ form, setForm, editando, presets = [], onSavePreset, onRem
   const { datas, geradas, puladas } = useMemo(() => (parcelado && !editando ? datasDoForm(form) : { datas: [], geradas: [], puladas: [] }), [form, parcelado, editando]);
 
   const previewUnico = useMemo(() => {
-    if (parcelado || diario) return null;
+    if (parcelado || diario || mensal) return null;
     const valor = parseFloat(form.valor);
     const taxa = parseFloat(form.taxaJuros);
     if (!valor || !taxa || !form.dataEmprestimo) return null;
@@ -3819,7 +3894,7 @@ function LoanFields({ form, setForm, editando, presets = [], onSavePreset, onRem
     const periodos = Math.max(1, Math.ceil(diasDecorridos / prazoDias));
     const juros = valor * (taxa / 100) * periodos;
     return { periodos, prazoDias, juros, total: valor + juros };
-  }, [parcelado, diario, form.valor, form.taxaJuros, form.dataEmprestimo, form.prazoDias]);
+  }, [parcelado, diario, mensal, form.valor, form.taxaJuros, form.dataEmprestimo, form.prazoDias]);
 
   const valor = parseFloat(form.valor) || 0;
   const valorParcela = parseFloat(form.valorParcela) || 0;
@@ -3829,7 +3904,7 @@ function LoanFields({ form, setForm, editando, presets = [], onSavePreset, onRem
     <>
       {!editando && (
         <div className="flex gap-1 mb-4 p-1 rounded-full" style={{ background: T.paperSoft, border: `1px solid ${T.line}` }}>
-          {[["diario", "Juros diário"], ["unico", "Pagamento único"]].map(([k, label]) => (
+          {[["diario", "Juros diário"], ["mensal", "Parcelado mensal"], ["unico", "Pagamento único"]].map(([k, label]) => (
             <button key={k} type="button" onClick={() => set("tipo")(k)} style={{ background: form.tipo === k ? T.paper : "transparent", color: form.tipo === k ? T.goldSoft : T.muted, boxShadow: form.tipo === k ? T.shadow : "none" }} className="flex-1 rounded-full py-1.5 text-xs font-medium">
               {label}
             </button>
@@ -3837,7 +3912,57 @@ function LoanFields({ form, setForm, editando, presets = [], onSavePreset, onRem
         </div>
       )}
 
-      {diario ? (
+      {mensal ? (
+        <>
+          <div className="grid grid-cols-2 gap-x-3">
+            <Field label="Valor emprestado">
+              <DecimalField value={form.valor} onChange={set("valor")} placeholder="0,00" />
+            </Field>
+            <Field label="Data do empréstimo">
+              <DateField value={form.dataEmprestimo} onChange={set("dataEmprestimo")} />
+            </Field>
+          </div>
+
+          {editando ? (
+            <p style={{ color: T.muted }} className="text-xs mb-4">
+              As parcelas já foram geradas. Pra mudar a data ou o valor de uma parcela, use o lápis ao lado dela.
+            </p>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 gap-x-3">
+                <Field label="Juros % ao mês">
+                  <DecimalField value={form.taxaJuros} onChange={set("taxaJuros")} placeholder="10" />
+                </Field>
+                <Field label="Qtd. de parcelas">
+                  <IntegerField value={form.qtdParcelas} onChange={set("qtdParcelas")} placeholder="6" />
+                </Field>
+              </div>
+              <div className="grid grid-cols-2 gap-x-3">
+                <Field label="Juros na parcela % (opcional)">
+                  <DecimalField value={form.jurosParcela} onChange={set("jurosParcela")} placeholder="0" />
+                </Field>
+                <Field label="Primeira parcela">
+                  <DateField value={form.primeiraParcela || addMeses(form.dataEmprestimo || hojeISO(), 1)} onChange={set("primeiraParcela")} />
+                </Field>
+              </div>
+
+              <p style={{ color: T.muted }} className="text-xs mb-3">
+                O juro do mês é simples: % ao mês × número de meses, sobre o valor emprestado. O juro da parcela, se você preencher, soma mais esse % em cada parcela. As parcelas caem no mesmo dia de cada mês e você pode mudar valor e data de cada uma depois.
+              </p>
+
+              {prevMensal && (
+                <div style={{ background: T.paperSoft, border: `1px solid ${T.line}` }} className="rounded-xl p-3 mb-4 space-y-1.5">
+                  <Row label={`Juros do mês (${form.taxaJuros || 0}% × ${prevMensal.n})`} value={fmt(prevMensal.jurosMes)} />
+                  {prevMensal.extra > 0 && <Row label={`Juros da parcela (${form.jurosParcela}%)`} value={fmt(prevMensal.extra)} />}
+                  <Row label={`Parcela (${prevMensal.n}×)`} value={fmt(prevMensal.cada)} bold />
+                  <Row label="Total a receber" value={fmt(prevMensal.total)} bold />
+                  <Row label="Primeira e última parcela" value={`${fmtData(prevMensal.datas[0])} · ${fmtData(prevMensal.datas[prevMensal.n - 1])}`} />
+                </div>
+              )}
+            </>
+          )}
+        </>
+      ) : diario ? (
         <>
           <div className="grid grid-cols-2 gap-x-3">
             <Field label="Valor emprestado">
@@ -4126,7 +4251,7 @@ function ReportClientBlock({ client }) {
               <tbody>
                 <ReportRow label="Valor emprestado" value={fmt(l.valor)} />
                 {l.calc.parcelado ? (
-                  <ReportRow label={`Parcelas (${rotuloDias(l.diasCobranca)})`} value={`${l.calc.pagas}/${l.calc.parcelas.length} pagas${l.calc.atrasadas.length ? ` · ${l.calc.atrasadas.length} atrasada${l.calc.atrasadas.length > 1 ? "s" : ""}` : ""}`} />
+                  <ReportRow label={l.parcelasMensais ? `Parcelas mensais (${l.taxaJuros}% ao mês${l.jurosParcela > 0 ? ` + ${l.jurosParcela}% na parcela` : ""})` : `Parcelas (${rotuloDias(l.diasCobranca)})`} value={`${l.calc.pagas}/${l.calc.parcelas.length} pagas${l.calc.atrasadas.length ? ` · ${l.calc.atrasadas.length} atrasada${l.calc.atrasadas.length > 1 ? "s" : ""}` : ""}`} />
                 ) : l.calc.diario ? (
                   <ReportRow label={`Juros diário (${l.taxaJuros}% em ${l.calc.diasTotal} dias, ${rotuloDias(l.diasCobranca)})`} value={`${l.calc.diasContados}/${l.calc.diasTotal} dias — ${fmt(l.calc.juros)}`} />
                 ) : (
