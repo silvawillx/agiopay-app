@@ -29,7 +29,7 @@ create table emprestimos (
   dias_cobranca smallint[],            -- null = empréstimo de pagamento único; 0=dom ... 6=sáb
   pular_feriados boolean not null default true,
   juros_diario boolean not null default false,  -- true: juro soma por dia de cobrança até o total (prazo_dias = dias com juros, taxa_juros = juro total %)
-  taxa_dia numeric(6,2) check (taxa_dia is null or taxa_dia > 0),  -- juro diário: % ao dia sobre o valor; taxa_juros vira o teto (juro máximo total)
+  taxa_dia numeric(6,2) check (taxa_dia is null or taxa_dia > 0),  -- juro diário: % ao dia sobre o valor, por prazo_dias dias de cobrança; taxa_juros = taxa_dia × prazo_dias (resultado)
   parcelas_mensais boolean not null default false,  -- true: parcelado mensal (parcelas na tabela parcelas, juro do mês + juro opcional na parcela)
   juros_parcela numeric(6,2) check (juros_parcela is null or juros_parcela >= 0),  -- % extra em cada parcela (opcional)
   created_at timestamptz not null default now()

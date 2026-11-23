@@ -268,9 +268,9 @@ function calcularEmprestimoJurosDiario(l) {
   // em centavos pra não acumular erro de arredondamento
   const totalC = Math.round(l.valor * (l.taxaJuros || 0));
   const diaC = l.taxaDia > 0 ? Math.round(l.valor * l.taxaDia) : 0;
-  // modelo novo: o cobrador define % por dia e o teto; os dias até o teto são consequência.
+  // modelo novo: % por dia × quantidade de dias de cobrança (prazoDias); o juro total é o resultado.
   // modelo antigo (sem taxa por dia): o juro total é dividido igualmente em `prazoDias` dias.
-  const nDias = diaC > 0 ? Math.min(400, Math.max(1, Math.ceil(totalC / diaC))) : l.prazoDias;
+  const nDias = l.prazoDias;
   const datas = datasJurosDiario(l.dataEmprestimo, l.diasCobranca, l.pularFeriados, nDias);
   const n = datas.length || 1;
   const jurosTotal = totalC / 100;
@@ -378,6 +378,9 @@ function calcularCliente(cliente) {
 }
 
 const DIAS_SEG_SAB = [1, 2, 3, 4, 5, 6];
+const DIAS_SEG_SEX = [1, 2, 3, 4, 5];
+// juro total (%) do juro diário: % ao dia × dias de cobrança, com 2 casas (como o banco guarda)
+const jurosTotalDiario = (taxaDia, n) => Math.round(taxaDia * n * 100) / 100;
 
 function novoEmprestimoForm() {
   const hoje = hojeISO();
@@ -393,7 +396,7 @@ function novoEmprestimoForm() {
     jurosParcela: "", // parcelado mensal: % extra em cada parcela (opcional)
     primeiraParcela: "", // parcelado mensal: vazio = 1 mês depois do empréstimo
     qtdParcelas: "30", // no juro diário: quantos dias de cobrança somam juro
-    diasCobranca: DIAS_SEG_SAB,
+    diasCobranca: DIAS_SEG_SEX,
     pularFeriados: true,
     primeiraCobranca: "",
     primeiraManual: false, // se false, a 1ª cobrança é o próximo dia de cobrança depois do empréstimo
@@ -444,15 +447,11 @@ function validarEmprestimo(f, editando) {
     if (!editando && !(n > 0 && n <= 120)) falta.push("quantidade de parcelas (1 a 120)");
   } else if (f.tipo === "diario") {
     const taxaDia = parseFloat(f.taxaDia);
-    const teto = parseFloat(f.taxaJuros);
+    const n = parseInt(f.qtdParcelas || "0", 10);
     if (!(taxaDia > 0)) falta.push("juros por dia");
-    if (!(teto > 0)) falta.push("juro máximo (total)");
-    if (!f.diasCobranca?.length) falta.push("dias de cobrança");
-    if (taxaDia > 0 && teto > 0) {
-      const n = Math.ceil(teto / taxaDia - 1e-9);
-      if (n > 400) falta.push("juro por dia maior (levaria mais de 400 dias)");
-      else if (f.diasCobranca?.length && datasJurosDiario(f.dataEmprestimo, f.diasCobranca, f.pularFeriados, n).length !== n) falta.push("dias de cobrança");
-    }
+    if (!(n > 0 && n <= 400)) falta.push("quantos dias (1 a 400)");
+    if (!f.diasCobranca?.length) falta.push("dias que contam juro");
+    else if (taxaDia > 0 && n > 0 && n <= 400 && datasJurosDiario(f.dataEmprestimo, f.diasCobranca, f.pularFeriados, n).length !== n) falta.push("dias que contam juro");
   } else {
     if (!(parseFloat(f.taxaJuros) >= 0)) falta.push("juros");
     if (!(parseInt(f.prazoDias || "0", 10) > 0)) falta.push("prazo");
@@ -977,9 +976,9 @@ function AppInner() {
         user_id: user.id,
         cliente_id: clienteId,
         valor,
-        taxa_juros: parseFloat(data.taxaJuros),
+        taxa_juros: jurosTotalDiario(parseFloat(data.taxaDia), parseInt(data.qtdParcelas, 10)),
         taxa_dia: parseFloat(data.taxaDia),
-        prazo_dias: Math.ceil(parseFloat(data.taxaJuros) / parseFloat(data.taxaDia) - 1e-9),
+        prazo_dias: parseInt(data.qtdParcelas, 10),
         data_emprestimo: data.dataEmprestimo,
         garantia: data.garantia || null,
         dias_cobranca: data.diasCobranca,
@@ -1072,9 +1071,9 @@ function AppInner() {
     } else if (data.tipo === "mensal") {
       // parcelas já foram geradas: valor e data de cada uma se editam parcela por parcela
     } else if (data.tipo === "diario") {
-      update.taxa_juros = parseFloat(data.taxaJuros);
+      update.taxa_juros = jurosTotalDiario(parseFloat(data.taxaDia), parseInt(data.qtdParcelas, 10));
       update.taxa_dia = parseFloat(data.taxaDia);
-      update.prazo_dias = Math.ceil(parseFloat(data.taxaJuros) / parseFloat(data.taxaDia) - 1e-9);
+      update.prazo_dias = parseInt(data.qtdParcelas, 10);
       update.dias_cobranca = data.diasCobranca;
       update.pular_feriados = data.pularFeriados;
     } else {
@@ -2021,7 +2020,7 @@ function LoanCard({ loan, expanded, onToggle, onPay, onEditPayment, onRemovePaym
   const subtitulo = calc.parcelado
     ? `${calc.pagas}/${calc.parcelas.length} parcelas pagas` + (calc.atrasado ? ` · ${calc.atrasadas.length} atrasada${calc.atrasadas.length > 1 ? "s" : ""}` : "")
     : calc.diario
-    ? (calc.taxaDia ? `${calc.taxaDia}% ao dia (máx. ${loan.taxaJuros}%)` : `${loan.taxaJuros}% em ${calc.diasTotal} dias`) + (calc.atrasado ? ` · ${calc.diasAtraso}d de atraso` : ` · juro ${calc.diasContados}/${calc.diasTotal} dias`)
+    ? (calc.taxaDia ? `${calc.taxaDia}% ao dia × ${calc.diasTotal} dias` : `${loan.taxaJuros}% em ${calc.diasTotal} dias`) + (calc.atrasado ? ` · ${calc.diasAtraso}d de atraso` : ` · juro ${calc.diasContados}/${calc.diasTotal} dias`)
     : `${loan.taxaJuros}% a.m.` + (calc.atrasado ? ` · ${calc.diasAtraso}d de atraso` : ` · ${calc.periodos} período${calc.periodos > 1 ? "s" : ""}`);
 
   // joga as parcelas atrasadas pra depois da última parcela, nos mesmos dias
@@ -3788,13 +3787,13 @@ function PresetChips({ presets, onPick, onSave, onRemove, podeSalvar }) {
 }
 
 // escolha dos dias da semana em que a cobrança corre
-function DiasCobrancaPicker({ dias, onChange }) {
+function DiasCobrancaPicker({ dias, onChange, titulo = "Dias de cobrança" }) {
   const atalhos = [["Seg–Sex", [1, 2, 3, 4, 5]], ["Seg–Sáb", [1, 2, 3, 4, 5, 6]], ["Todos", [0, 1, 2, 3, 4, 5, 6]]];
   const chave = [...dias].sort().join(",");
   const toggle = (d) => onChange(dias.includes(d) ? dias.filter((x) => x !== d) : [...dias, d].sort());
   return (
     <div className="mb-3.5">
-      <span style={{ color: T.muted, fontFamily: "'Inter', system-ui, sans-serif" }} className="text-xs uppercase tracking-wide block mb-1.5">Dias de cobrança</span>
+      <span style={{ color: T.muted, fontFamily: "'Inter', system-ui, sans-serif" }} className="text-xs uppercase tracking-wide block mb-1.5">{titulo}</span>
       <div className="flex flex-wrap gap-1.5 mb-1.5">
         {atalhos.map(([label, ds]) => {
           const ativo = ds.join(",") === chave;
@@ -3904,33 +3903,30 @@ function LoanFields({ form, setForm, editando, presets = [], onSavePreset, onRem
   const prevDiario = useMemo(() => {
     if (!diario) return null;
     const taxaDia = parseFloat(form.taxaDia);
-    const teto = parseFloat(form.taxaJuros);
+    const n = parseInt(form.qtdParcelas || "0", 10);
     const valor = parseFloat(form.valor);
     if (!(valor > 0)) return null;
     if (!(taxaDia > 0)) return { dica: "Informe o juro por dia (%) para ver o resumo." };
-    if (!(teto > 0)) return { dica: "Informe o juro máximo total (%), que é onde o juro para de somar." };
-    if (!form.diasCobranca?.length) return { dica: "Marque pelo menos um dia de cobrança." };
-    const n = Math.ceil(teto / taxaDia - 1e-9);
-    if (n > 400) return { dica: "Com esse juro por dia, levaria mais de 400 dias para chegar no máximo. Aumente o juro por dia." };
+    if (!(n > 0 && n <= 400)) return { dica: "Informe por quantos dias o juro vai somar (1 a 400)." };
+    if (!form.diasCobranca?.length) return { dica: "Marque pelo menos um dia que conta juro." };
     const datas = datasJurosDiario(form.dataEmprestimo, form.diasCobranca, form.pularFeriados, n);
-    if (datas.length !== n) return { dica: "Confira a data e os dias de cobrança." };
-    const totalC = Math.round(valor * teto);
-    const diaC = Math.round(valor * taxaDia);
-    const jurosTotal = totalC / 100;
-    const jurosDia = diaC / 100;
+    if (datas.length !== n) return { dica: "Confira a data e os dias que contam juro." };
+    const totalPct = jurosTotalDiario(taxaDia, n);
+    const jurosTotal = Math.round(valor * totalPct) / 100;
+    const jurosDia = Math.round(valor * taxaDia) / 100;
     const ultima = datas[datas.length - 1];
-    const ultimoDiaC = totalC - diaC * (n - 1);
+    const quais = `${rotuloDias(form.diasCobranca)}${form.pularFeriados ? ", sem feriados" : ""}`;
     return {
       linhas: [
         { label: `Juro por dia (${taxaDia}%)`, value: fmt(jurosDia) },
-        { label: `Juro máximo (${teto}%)`, value: fmt(jurosTotal), color: T.greenSoft },
-        { label: "Dias até chegar no máximo", value: `${n} dia${n > 1 ? "s" : ""} de cobrança${ultimoDiaC !== diaC ? " (o último soma menos)" : ""}` },
+        { label: `Dias que contam juro (${quais})`, value: `${n} dia${n > 1 ? "s" : ""}` },
+        { label: `Juro total (${totalPct}%)`, value: fmt(jurosTotal), color: T.greenSoft },
         { label: "Total a receber no fim", value: fmt(valor + jurosTotal), bold: true },
         { label: "Juro completo em", value: fmtData(ultima) },
       ],
-      frase: `Empréstimo de ${fmt(valor)}. O juro soma ${taxaDia}% ao dia (${fmt(jurosDia)}) em cada dia de cobrança (${rotuloDias(form.diasCobranca)}${form.pularFeriados ? ", sem feriados" : ""}) e para quando chega em ${teto}% (${fmt(jurosTotal)}), em ${fmtData(ultima)}. Total no fim: ${fmt(valor + jurosTotal)}. Se pagar antes, paga só o juro dos dias que passaram. Pode pagar quando e quanto puder.`,
+      frase: `Empréstimo de ${fmt(valor)}. O juro é de ${taxaDia}% ao dia (${fmt(jurosDia)}), contando só ${quais}, por ${n} dias, até ${fmtData(ultima)}. Juro total: ${fmt(jurosTotal)}. Total no fim: ${fmt(valor + jurosTotal)}. Se pagar antes, paga só o juro dos dias que passaram. Pode pagar quando e quanto puder.`,
     };
-  }, [diario, form.taxaDia, form.taxaJuros, form.valor, form.dataEmprestimo, form.diasCobranca, form.pularFeriados]);
+  }, [diario, form.taxaDia, form.qtdParcelas, form.valor, form.dataEmprestimo, form.diasCobranca, form.pularFeriados]);
 
   const { datas, geradas, puladas } = useMemo(() => (parcelado && !editando ? datasDoForm(form) : { datas: [], geradas: [], puladas: [] }), [form, parcelado, editando]);
 
@@ -4027,12 +4023,12 @@ function LoanFields({ form, setForm, editando, presets = [], onSavePreset, onRem
             <Field label="Juros % ao dia">
               <DecimalField value={form.taxaDia} onChange={set("taxaDia")} placeholder="1" />
             </Field>
-            <Field label="Juro máximo total %">
-              <DecimalField value={form.taxaJuros} onChange={set("taxaJuros")} placeholder="30" />
+            <Field label="Por quantos dias">
+              <IntegerField value={form.qtdParcelas} onChange={set("qtdParcelas")} placeholder="30" />
             </Field>
           </div>
 
-          <DiasCobrancaPicker dias={form.diasCobranca} onChange={set("diasCobranca")} />
+          <DiasCobrancaPicker titulo="Dias que contam juro" dias={form.diasCobranca} onChange={set("diasCobranca")} />
 
           <label className="flex items-center gap-2 mb-3.5 text-sm cursor-pointer" style={{ color: T.textPaper }}>
             <input type="checkbox" checked={form.pularFeriados} onChange={(e) => set("pularFeriados")(e.target.checked)} className="w-4 h-4 accent-[#3E6B4C]" />
@@ -4040,7 +4036,7 @@ function LoanFields({ form, setForm, editando, presets = [], onSavePreset, onRem
           </label>
 
           <p style={{ color: T.muted }} className="text-xs mb-3">
-            A cada dia de cobrança marcado, soma o juro por dia (% sobre o valor emprestado). Quando chega no juro máximo, para de somar. O cliente paga quando e quanto puder, e quem paga antes deve só o juro dos dias que passaram.
+            O juro soma a % ao dia sobre o valor emprestado, só nos dias marcados abaixo (ex.: tire sábado e domingo), pelo número de dias que você escolher. Depois disso o juro para. O cliente paga quando e quanto puder, e quem paga antes deve só o juro dos dias que passaram.
           </p>
 
           <ResumoAoVivo r={prevDiario} />
@@ -4329,7 +4325,7 @@ function ReportClientBlock({ client }) {
                 {l.calc.parcelado ? (
                   <ReportRow label={l.parcelasMensais ? `Parcelas mensais (${l.taxaJuros}% ao mês${l.jurosParcela > 0 ? ` + ${l.jurosParcela}% na parcela` : ""})` : `Parcelas (${rotuloDias(l.diasCobranca)})`} value={`${l.calc.pagas}/${l.calc.parcelas.length} pagas${l.calc.atrasadas.length ? ` · ${l.calc.atrasadas.length} atrasada${l.calc.atrasadas.length > 1 ? "s" : ""}` : ""}`} />
                 ) : l.calc.diario ? (
-                  <ReportRow label={`Juros diário (${l.calc.taxaDia ? `${l.calc.taxaDia}% ao dia, máx. ${l.taxaJuros}%` : `${l.taxaJuros}% em ${l.calc.diasTotal} dias`}, ${rotuloDias(l.diasCobranca)})`} value={`${l.calc.diasContados}/${l.calc.diasTotal} dias — ${fmt(l.calc.juros)}`} />
+                  <ReportRow label={`Juros diário (${l.calc.taxaDia ? `${l.calc.taxaDia}% ao dia × ${l.calc.diasTotal} dias` : `${l.taxaJuros}% em ${l.calc.diasTotal} dias`}, ${rotuloDias(l.diasCobranca)})`} value={`${l.calc.diasContados}/${l.calc.diasTotal} dias — ${fmt(l.calc.juros)}`} />
                 ) : (
                   <ReportRow label={`Juros (${l.taxaJuros}% a cada ${l.calc.prazoDias}d)`} value={`${l.calc.periodos} período${l.calc.periodos > 1 ? "s" : ""} — ${fmt(l.calc.juros)}`} />
                 )}
