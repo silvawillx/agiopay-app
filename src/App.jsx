@@ -3932,6 +3932,8 @@ function LoanFields({ form, setForm, editando, presets = [], onSavePreset, onRem
     };
   }, [diario, form.taxaDia, form.taxaJuros, form.valor, form.dataEmprestimo, form.diasCobranca, form.pularFeriados]);
 
+  const { datas, geradas, puladas } = useMemo(() => (parcelado && !editando ? datasDoForm(form) : { datas: [], geradas: [], puladas: [] }), [form, parcelado, editando]);
+
   const previewUnico = useMemo(() => {
     if (parcelado || diario || mensal) return null;
     const valor = parseFloat(form.valor);
