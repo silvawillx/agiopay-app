@@ -738,6 +738,36 @@ function AppInner() {
   const user = session?.user || null;
   const userId = user?.id || null;
 
+  // assinatura: teste grátis / ativa / liberada. Falha ao ler = não trava a tela
+  // (o bloqueio de verdade é feito pelo banco)
+  const [assinatura, setAssinatura] = useState(null);
+  const [assinando, setAssinando] = useState(false);
+  const [erroAssinatura, setErroAssinatura] = useState("");
+  const carregarAssinatura = useCallback(async () => {
+    if (!userId) { setAssinatura(null); return; }
+    const { data, error: errA } = await supabase.from("assinaturas").select("status, teste_ate").eq("user_id", userId).maybeSingle();
+    if (!errA) setAssinatura(data || null);
+  }, [userId]);
+  useEffect(() => {
+    carregarAssinatura();
+    const aoVoltar = () => { if (document.visibilityState === "visible") carregarAssinatura(); };
+    document.addEventListener("visibilitychange", aoVoltar);
+    return () => document.removeEventListener("visibilitychange", aoVoltar);
+  }, [carregarAssinatura]);
+  const acesso = avaliarAssinatura(assinatura);
+  const assinar = async () => {
+    setAssinando(true);
+    setErroAssinatura("");
+    try {
+      await iniciarAssinatura();
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error("AGIOPAY — erro ao abrir o pagamento:", e);
+      setErroAssinatura("O pagamento ainda não está disponível. Tente de novo mais tarde.");
+    }
+    setAssinando(false);
+  };
+
   const salvarPreset = async (taxaJuros, prazoDias) => {
     const jaExiste = taxaPresets.some((p) => p.taxaJuros === taxaJuros && p.prazoDias === prazoDias);
     if (jaExiste) return;
@@ -1535,6 +1565,22 @@ function AppInner() {
     );
   }
 
+  if (acesso.conhecida && !acesso.liberado) {
+    return (
+      <PaywallScreen
+        info={acesso}
+        email={user.email}
+        onAssinar={assinar}
+        busy={assinando}
+        erro={erroAssinatura}
+        onAtualizar={carregarAssinatura}
+        onBackup={baixarBackup}
+        backupBusy={backupBusy}
+        onSair={() => supabase.auth.signOut()}
+      />
+    );
+  }
+
   if (printMode) {
     return <PrintReport mode={printMode} allClients={enriched} userNome={nomeUsuario} onClose={() => setPrintMode(null)} />;
   }
@@ -1647,6 +1693,8 @@ function AppInner() {
         </header>
 
         <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 pt-5 sm:pt-6 lg:pt-8 pb-28 lg:pb-12">
+        {acesso.emTeste && <AvisoTeste info={acesso} onAssinar={assinar} busy={assinando} />}
+        {erroAssinatura && <p style={{ color: T.red }} className="text-xs mb-3">{erroAssinatura}</p>}
         <StatusConexao online={online} pendentes={fila.length} sincronizando={sincronizando} copiaDe={copiaDe} onEnviar={async () => { if (await sincronizar()) loadClients(); }} />
 
         {faltaMigracao.length > 0 && (
@@ -1835,6 +1883,9 @@ function AppInner() {
           onRestaurarBackup={restaurarBackup}
           onClose={() => setShowAccount(false)}
           onUpdated={(novoNome) => setNomeUsuario(novoNome)}
+          assinaturaInfo={acesso}
+          onAssinar={assinar}
+          assinando={assinando}
         />
       )}
 
@@ -1854,6 +1905,84 @@ function AppInner() {
           {error}
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------- ASSINATURA ----------------
+const PRECO_MENSAL = 15; // R$ por mês (valor de teste; o definitivo vai pra configuração do servidor)
+
+// mesma regra do banco (função tem_acesso): liberada/ativa sempre; em teste só até a data
+function avaliarAssinatura(a) {
+  if (!a) return { conhecida: false, liberado: true }; // sem informação: não trava a tela (quem decide de verdade é o banco)
+  const agora = Date.now();
+  const testeAte = a.teste_ate ? new Date(a.teste_ate).getTime() : 0;
+  let liberado = false;
+  if (a.status === "liberada" || a.status === "ativa") liberado = true;
+  else if (a.status === "teste") liberado = testeAte > agora;
+  return {
+    conhecida: true,
+    status: a.status,
+    liberado,
+    emTeste: a.status === "teste" && liberado,
+    testeAte: a.teste_ate || null,
+    diasRestantes: Math.max(0, Math.ceil((testeAte - agora) / 86400000)),
+  };
+}
+
+// pede ao servidor o link de pagamento e leva o usuário até ele
+async function iniciarAssinatura() {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  if (!token) throw new Error("sem sessão");
+  const r = await fetch("/api/assinar", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: "{}" });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || !j.url) throw new Error(j.erro || "pagamento indisponível");
+  window.location.href = j.url;
+}
+
+function AvisoTeste({ info, onAssinar, busy }) {
+  const d = info.diasRestantes;
+  return (
+    <div style={{ background: T.amberTint, color: T.textPaper, border: "1px solid #F3D9B1" }} className="rounded-xl px-4 py-3 text-sm mb-4 flex flex-wrap items-center justify-between gap-2">
+      <span>
+        <b>Teste grátis:</b> {d > 1 ? `faltam ${d} dias` : d === 1 ? "falta 1 dia" : "termina hoje"}. Depois disso é preciso assinar para continuar criando e alterando empréstimos.
+      </span>
+      <button onClick={onAssinar} disabled={busy} style={{ background: T.green, color: T.onColor }} className="rounded-full px-4 py-1.5 text-xs font-medium disabled:opacity-50">
+        {busy ? "Aguarde…" : "Assinar agora"}
+      </button>
+    </div>
+  );
+}
+
+function PaywallScreen({ info, email, onAssinar, busy, erro, onAtualizar, onBackup, backupBusy, onSair }) {
+  const titulo = info.status === "atrasada" ? "Pagamento em atraso" : info.status === "cancelada" ? "Assinatura cancelada" : "Seu teste grátis terminou";
+  const texto = info.status === "atrasada"
+    ? "Não identificamos o pagamento da mensalidade. Regularize para voltar a criar e alterar empréstimos."
+    : info.status === "cancelada"
+    ? "Sua assinatura foi cancelada. Assine de novo para voltar a criar e alterar empréstimos."
+    : "Assine para continuar criando e alterando empréstimos.";
+  return (
+    <div style={{ background: T.ink, fontFamily: "'Inter', system-ui, sans-serif" }} className="min-h-[100dvh] w-full flex items-center justify-center px-4">
+      <div style={CARD} className="w-full max-w-sm rounded-3xl p-7 text-center">
+        <ShieldCheck size={28} style={{ color: T.gold, margin: "0 auto 10px" }} />
+        <h1 style={{ fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif", color: T.textPaper }} className="text-xl font-semibold mb-1.5">{titulo}</h1>
+        <p style={{ color: T.muted }} className="text-sm mb-1">{texto}</p>
+        <p style={{ color: T.textPaper }} className="text-sm mb-5"><b>{fmt(PRECO_MENSAL)}</b> por mês</p>
+        <button onClick={onAssinar} disabled={busy} style={{ background: T.green, color: T.onColor }} className="w-full rounded-full py-2.5 text-sm font-medium disabled:opacity-50">
+          {busy ? "Aguarde…" : "Assinar"}
+        </button>
+        {erro && <p style={{ color: T.red }} className="text-xs mt-2">{erro}</p>}
+        <button onClick={onAtualizar} style={{ color: T.muted }} className="mt-3 text-xs underline">Já paguei, atualizar</button>
+        <div style={{ borderTop: `1px solid ${T.line}` }} className="mt-5 pt-4">
+          <p style={{ color: T.muted }} className="text-xs mb-2">Seus dados continuam guardados. Você pode baixar uma cópia a qualquer momento.</p>
+          <button onClick={onBackup} disabled={backupBusy} style={{ background: T.paperSoft, color: T.textPaper, border: `1px solid ${T.line}` }} className="rounded-full px-4 py-2 text-xs font-medium disabled:opacity-50">
+            {backupBusy ? "Aguarde…" : "Baixar meus dados"}
+          </button>
+        </div>
+        <p style={{ color: T.muted }} className="text-xs mt-4">Conta: {email}</p>
+        <button onClick={onSair} style={{ color: T.muted }} className="mt-1 text-xs underline">Sair</button>
+      </div>
     </div>
   );
 }
@@ -3119,7 +3248,7 @@ function AuthScreen({ permitirEsqueci = false }) {
   );
 }
 
-function AccountModal({ user, nomeUsuario, online, backupBusy, ultimoBackup, onBaixarBackup, onRestaurarBackup, onClose, onUpdated }) {
+function AccountModal({ user, nomeUsuario, online, backupBusy, ultimoBackup, onBaixarBackup, onRestaurarBackup, onClose, onUpdated, assinaturaInfo, onAssinar, assinando }) {
   const [arquivoRestaurar, setArquivoRestaurar] = useState(null);
   const [msgBackup, setMsgBackup] = useState(null); // { ok } | { erro }
   const [nome, setNome] = useState(nomeUsuario || "");
@@ -3191,6 +3320,23 @@ function AccountModal({ user, nomeUsuario, online, backupBusy, ultimoBackup, onB
         <div className="mb-6">
           <SubmitButton valid={nomeValido} busy={busyNome} label="Salvar nome" busyLabel="Salvando…" missing="nome" onClick={salvarNome} />
         </div>
+
+        {assinaturaInfo?.conhecida && (
+          <div style={{ borderTop: `1px solid ${T.line}` }} className="pt-5 mb-6">
+            <p style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="font-medium mb-1">Assinatura</p>
+            <p style={{ color: T.muted }} className="text-xs mb-3">
+              {assinaturaInfo.status === "liberada" && "Conta liberada: sem cobrança."}
+              {assinaturaInfo.status === "ativa" && `Assinatura ativa (${fmt(PRECO_MENSAL)} por mês).`}
+              {assinaturaInfo.emTeste && `Teste grátis até ${new Date(assinaturaInfo.testeAte).toLocaleDateString("pt-BR")} (${assinaturaInfo.diasRestantes} dia${assinaturaInfo.diasRestantes === 1 ? "" : "s"}). Depois: ${fmt(PRECO_MENSAL)} por mês.`}
+              {!assinaturaInfo.liberado && "Sua assinatura precisa ser regularizada."}
+            </p>
+            {(assinaturaInfo.emTeste || !assinaturaInfo.liberado) && (
+              <button onClick={onAssinar} disabled={assinando} style={{ background: T.green, color: T.onColor }} className="rounded-full px-4 py-2 text-xs font-medium disabled:opacity-50">
+                {assinando ? "Aguarde…" : "Assinar"}
+              </button>
+            )}
+          </div>
+        )}
 
         <div style={{ borderTop: `1px solid ${T.line}` }} className="pt-5 mb-6">
           <p style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="font-medium mb-1 flex items-center gap-2"><HardDriveDownload size={16} /> Backup</p>
