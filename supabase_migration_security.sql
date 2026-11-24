@@ -37,3 +37,7 @@ alter table emprestimos
 -- Juros diário: % por dia de cobrança, até o teto (taxa_juros). Sem taxa_dia = modelo antigo
 -- (juro total dividido igualmente em prazo_dias dias).
 alter table emprestimos add column if not exists taxa_dia numeric(6,2) check (taxa_dia is null or taxa_dia > 0);
+
+-- Pagamento diário: valor fixo por dia de cobrança; o que faltar rola pro dia seguinte,
+-- e taxa_dia (opcional) é o juro ao dia sobre o que ainda deve. prazo_dias = dias previstos.
+alter table emprestimos add column if not exists valor_diario numeric(12,2) check (valor_diario is null or valor_diario > 0);

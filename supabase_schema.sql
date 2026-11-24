@@ -30,6 +30,7 @@ create table emprestimos (
   pular_feriados boolean not null default true,
   juros_diario boolean not null default false,  -- true: juro soma por dia de cobrança até o total (prazo_dias = dias com juros, taxa_juros = juro total %)
   taxa_dia numeric(6,2) check (taxa_dia is null or taxa_dia > 0),  -- juro diário: % ao dia sobre o valor, por prazo_dias dias de cobrança; taxa_juros = taxa_dia × prazo_dias (resultado)
+  valor_diario numeric(12,2) check (valor_diario is null or valor_diario > 0),  -- pagamento diário: R$ por dia de cobrança (taxa_dia = juro ao dia sobre o saldo; prazo_dias = dias previstos)
   parcelas_mensais boolean not null default false,  -- true: parcelado mensal (parcelas na tabela parcelas, juro do mês + juro opcional na parcela)
   juros_parcela numeric(6,2) check (juros_parcela is null or juros_parcela >= 0),  -- sem uso no app (campo removido); pode ficar vazio
   created_at timestamptz not null default now()
