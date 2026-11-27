@@ -827,7 +827,7 @@ function AppInner() {
   const [erroAssinatura, setErroAssinatura] = useState("");
   const carregarAssinatura = useCallback(async () => {
     if (!userId) { setAssinatura(null); return; }
-    const { data, error: errA } = await supabase.from("assinaturas").select("status, teste_ate").eq("user_id", userId).maybeSingle();
+    const { data, error: errA } = await supabase.from("assinaturas").select("status, teste_ate, asaas_customer_id").eq("user_id", userId).maybeSingle();
     if (!errA) setAssinatura(data || null);
   }, [userId]);
   useEffect(() => {
@@ -837,17 +837,24 @@ function AppInner() {
     return () => document.removeEventListener("visibilitychange", aoVoltar);
   }, [carregarAssinatura]);
   const acesso = avaliarAssinatura(assinatura);
-  const assinar = async () => {
+  const [pedirDoc, setPedirDoc] = useState(false);
+  const executarAssinatura = async (cpfCnpj) => {
     setAssinando(true);
     setErroAssinatura("");
     try {
-      await iniciarAssinatura();
+      await iniciarAssinatura(cpfCnpj);
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error("AGIOPAY — erro ao abrir o pagamento:", e);
-      setErroAssinatura("O pagamento ainda não está disponível. Tente de novo mais tarde.");
+      setErroAssinatura(e.amigavel ? e.message : "O pagamento ainda não está disponível. Tente de novo mais tarde.");
     }
     setAssinando(false);
+  };
+  // quem ainda não tem cadastro no Asaas precisa informar CPF ou CNPJ (o Asaas exige pra cobrar)
+  const assinar = () => {
+    setErroAssinatura("");
+    if (assinatura?.asaas_customer_id) executarAssinatura("");
+    else setPedirDoc(true);
   };
 
   const salvarPreset = async (taxaJuros, prazoDias) => {
@@ -1666,7 +1673,7 @@ function AppInner() {
   }
 
   if (!user) {
-    return <AuthScreen />;
+    return <AuthScreen permitirEsqueci permitirCadastro />;
   }
 
   if (recoveryMode) {
@@ -1697,6 +1704,7 @@ function AppInner() {
         onBackup={baixarBackup}
         backupBusy={backupBusy}
         onSair={() => supabase.auth.signOut()}
+        docModal={pedirDoc && <PedirDocumento busy={assinando} onCancelar={() => setPedirDoc(false)} onConfirmar={(d) => { setPedirDoc(false); executarAssinatura(d); }} />}
       />
     );
   }
@@ -1992,6 +2000,8 @@ function AppInner() {
 
       {showAdd && <ClientLoanForm title="Novo cliente" initial={novoClienteForm()} onClose={() => setShowAdd(false)} onSave={addClientWithLoan} presets={taxaPresets} onSavePreset={salvarPreset} onRemovePreset={removerPreset} />}
 
+      {pedirDoc && <PedirDocumento busy={assinando} onCancelar={() => setPedirDoc(false)} onConfirmar={(d) => { setPedirDoc(false); executarAssinatura(d); }} />}
+
       {showAccount && (
         <AccountModal
           user={user}
@@ -2242,14 +2252,77 @@ function avaliarAssinatura(a) {
 }
 
 // pede ao servidor o link de pagamento e leva o usuário até ele
-async function iniciarAssinatura() {
+async function iniciarAssinatura(cpfCnpj = "") {
   const { data } = await supabase.auth.getSession();
   const token = data.session?.access_token;
   if (!token) throw new Error("sem sessão");
-  const r = await fetch("/api/assinar", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: "{}" });
+  const r = await fetch("/api/assinar", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ cpfCnpj }) });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok || !j.url) throw new Error(j.erro || "pagamento indisponível");
+  if (!r.ok || !j.url) {
+    const e = new Error(j.erro || "pagamento indisponível");
+    e.amigavel = !!j.erro; // mensagem escrita pelo nosso servidor: pode mostrar pro usuário
+    throw e;
+  }
   window.location.href = j.url;
+}
+
+// CPF/CNPJ de quem vai pagar (o Asaas exige pra emitir a cobrança)
+const docDigitos = (v) => (v || "").replace(/\D/g, "").slice(0, 14);
+function formatDoc(v) {
+  const d = docDigitos(v);
+  if (d.length <= 11) return formatCpf(d);
+  return d.replace(/^(\d{2})(\d{0,3})(\d{0,3})(\d{0,4})(\d{0,2}).*/, (_, a, b, c, e, f) => `${a}.${b}${c ? "." + c : ""}${e ? "/" + e : ""}${f ? "-" + f : ""}`);
+}
+function cnpjValido(v) {
+  const d = docDigitos(v);
+  if (d.length !== 14 || /^(\d)\1{13}$/.test(d)) return false;
+  const dv = (n) => {
+    const pesos = n === 12 ? [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2] : [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+    let soma = 0;
+    for (let i = 0; i < n; i++) soma += parseInt(d[i], 10) * pesos[i];
+    const r = soma % 11;
+    return r < 2 ? 0 : 11 - r;
+  };
+  return dv(12) === parseInt(d[12], 10) && dv(13) === parseInt(d[13], 10);
+}
+function docValido(v) {
+  const d = docDigitos(v);
+  return (d.length === 11 && cpfValido(d)) || (d.length === 14 && cnpjValido(d));
+}
+
+function PedirDocumento({ onConfirmar, onCancelar, busy }) {
+  const [doc, setDoc] = useState("");
+  const d = docDigitos(doc);
+  const invalido = (d.length === 11 || d.length === 14) && !docValido(doc);
+  return (
+    <div className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center">
+      <div onClick={onCancelar} className="absolute inset-0" style={{ background: "rgba(0,0,0,0.55)" }} />
+      <div style={{ background: T.paper }} className="relative w-full sm:max-w-sm rounded-t-3xl sm:rounded-3xl p-5 max-h-[90dvh] overflow-y-auto">
+        <h2 style={{ color: T.textPaper, fontFamily: "'Fraunces', serif" }} className="text-xl font-semibold mb-1">Gerar cobrança</h2>
+        <p style={{ color: T.muted }} className="text-xs mb-4">Para emitir a cobrança, o Asaas (nosso meio de pagamento) precisa do CPF ou CNPJ de quem vai pagar. Você escolhe PIX, boleto ou cartão na próxima tela.</p>
+        <Field label="CPF ou CNPJ">
+          <input
+            style={inputStyle}
+            className="w-full rounded-lg px-3 py-2.5 text-sm outline-none"
+            type="text"
+            inputMode="numeric"
+            autoComplete="off"
+            placeholder="000.000.000-00"
+            value={doc}
+            onChange={(e) => setDoc(formatDoc(e.target.value))}
+            onKeyDown={(e) => e.key === "Enter" && docValido(doc) && !busy && onConfirmar(d)}
+          />
+        </Field>
+        {invalido && <p style={{ color: T.red }} className="text-xs -mt-2 mb-3">Número inválido — confira os dígitos.</p>}
+        <div className="flex gap-2 mt-1">
+          <button onClick={onCancelar} style={{ background: T.paperSoft, color: T.textPaper, border: `1px solid ${T.line}` }} className="flex-1 rounded-full py-2.5 text-sm font-medium">Cancelar</button>
+          <button onClick={() => onConfirmar(d)} disabled={!docValido(doc) || busy} style={{ background: docValido(doc) ? T.green : T.line, color: docValido(doc) ? T.onColor : T.muted }} className="flex-1 rounded-full py-2.5 text-sm font-medium disabled:cursor-not-allowed">
+            {busy ? "Aguarde…" : "Continuar"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function AvisoTeste({ info, onAssinar, busy }) {
@@ -2266,7 +2339,7 @@ function AvisoTeste({ info, onAssinar, busy }) {
   );
 }
 
-function PaywallScreen({ info, email, onAssinar, busy, erro, onAtualizar, onBackup, backupBusy, onSair }) {
+function PaywallScreen({ info, email, onAssinar, busy, erro, onAtualizar, onBackup, backupBusy, onSair, docModal }) {
   const titulo = info.status === "atrasada" ? "Pagamento em atraso" : info.status === "cancelada" ? "Assinatura cancelada" : "Seu teste grátis terminou";
   const texto = info.status === "atrasada"
     ? "Não identificamos o pagamento da mensalidade. Regularize para voltar a criar e alterar empréstimos."
@@ -2294,6 +2367,7 @@ function PaywallScreen({ info, email, onAssinar, busy, erro, onAtualizar, onBack
         <p style={{ color: T.muted }} className="text-xs mt-4">Conta: {email}</p>
         <button onClick={onSair} style={{ color: T.muted }} className="py-2.5 px-3 text-xs underline">Sair</button>
       </div>
+      {docModal}
     </div>
   );
 }
@@ -3432,8 +3506,10 @@ function AceitarTermosScreen({ onAccept }) {
 // Tela de login. Não existe cadastro público: as contas são criadas pelo
 // painel /admin. O "esqueci minha senha" só aparece na tela de login do
 // /admin (pra você, dono); quem usa o app pede uma senha nova pra você.
-function AuthScreen({ permitirEsqueci = false }) {
-  const [mode, setMode] = useState("login"); // login | esqueci
+function AuthScreen({ permitirEsqueci = false, permitirCadastro = false }) {
+  const [mode, setMode] = useState("login"); // login | esqueci | cadastro
+  const [nome, setNome] = useState("");
+  const [aceitou, setAceitou] = useState(false);
   const [email, setEmail] = useState("");
   const [senha, setSenha] = useState("");
   const [showSenha, setShowSenha] = useState(false);
@@ -3445,9 +3521,11 @@ function AuthScreen({ permitirEsqueci = false }) {
   const emailValido = /\S+@\S+\.\S+/.test(email);
 
   const faltando = [];
-  if (mode === "login") {
+  if (mode === "login" || mode === "cadastro") {
+    if (mode === "cadastro" && nome.trim().length < 2) faltando.push("nome");
     if (!emailValido) faltando.push("email válido");
     if (senha.length < 6) faltando.push("senha com pelo menos 6 caracteres");
+    if (mode === "cadastro" && !aceitou) faltando.push("aceitar os Termos de Uso");
   } else {
     if (!emailValido) faltando.push("email válido");
   }
@@ -3462,6 +3540,14 @@ function AuthScreen({ permitirEsqueci = false }) {
       if (mode === "login") {
         const { error } = await supabase.auth.signInWithPassword({ email: email.trim().toLowerCase(), password: senha });
         if (error) setErr(traduzErro(error.message));
+      } else if (mode === "cadastro") {
+        const { data, error } = await supabase.auth.signUp({
+          email: email.trim().toLowerCase(),
+          password: senha,
+          options: { data: { nome: nome.trim() }, emailRedirectTo: window.location.origin },
+        });
+        if (error) setErr(traduzErro(error.message));
+        else if (!data?.session) setInfo("Conta criada! Enviamos um link de confirmação para o seu email. Confirme e depois entre aqui. Confira também o spam.");
       } else if (mode === "esqueci") {
         const { error } = await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase(), {
           redirectTo: window.location.origin + window.location.pathname,
@@ -3505,11 +3591,17 @@ function AuthScreen({ permitirEsqueci = false }) {
       <div className="lg:hidden mb-7"><Logo grande /></div>
       <div style={CARD} className="w-full max-w-sm rounded-3xl p-7 sm:p-8">
         <h1 style={{ fontFamily: FONT_DISPLAY, color: T.textPaper, letterSpacing: "-0.02em" }} className="text-2xl font-bold">
-          {mode === "login" ? "Entrar" : "Recuperar senha"}
+          {mode === "login" ? "Entrar" : mode === "cadastro" ? "Criar conta" : "Recuperar senha"}
         </h1>
         <p style={{ color: T.muted }} className="text-sm mt-1 mb-6">
-          {mode === "login" ? "Use o email e a senha que você recebeu." : "Mandamos um link pro seu email."}
+          {mode === "login" ? "Use o seu email e a sua senha." : mode === "cadastro" ? `Teste grátis por 7 dias. Depois ${fmt(PRECO_MENSAL)} por mês, sem fidelidade.` : "Mandamos um link pro seu email."}
         </p>
+
+        {mode === "cadastro" && (
+          <Field label="Seu nome">
+            <input style={inputStyle} type="text" className="w-full rounded-lg px-3 py-2.5 text-sm outline-none" value={nome} onChange={(e) => setNome(e.target.value)} placeholder="Como quer ser chamado" autoComplete="name" />
+          </Field>
+        )}
 
         <Field label="Email">
           <input style={inputStyle} type="email" className="w-full rounded-lg px-3 py-2.5 text-sm outline-none" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="voce@email.com" autoComplete="email" onKeyDown={(e) => e.key === "Enter" && mode === "esqueci" && submit()} />
@@ -3525,7 +3617,7 @@ function AuthScreen({ permitirEsqueci = false }) {
                 value={senha}
                 onChange={(e) => setSenha(e.target.value)}
                 placeholder="mínimo 6 caracteres"
-                autoComplete="current-password"
+                autoComplete={mode === "cadastro" ? "new-password" : "current-password"}
                 onKeyDown={(e) => e.key === "Enter" && submit()}
               />
               <button type="button" onClick={() => setShowSenha((s) => !s)} aria-label="Mostrar ou esconder a senha" className="absolute right-1 top-1/2 -translate-y-1/2 p-2.5" style={{ color: T.muted }}>
@@ -3541,21 +3633,35 @@ function AuthScreen({ permitirEsqueci = false }) {
           </button>
         )}
 
+        {mode === "cadastro" && (
+          <label className="flex items-start gap-2 mb-4 text-xs cursor-pointer" style={{ color: T.muted }}>
+            <input type="checkbox" checked={aceitou} onChange={(e) => setAceitou(e.target.checked)} className="w-4 h-4 mt-0.5 shrink-0 accent-[#3E6B4C]" />
+            <span>
+              Li e aceito os{" "}
+              <button type="button" onClick={() => setShowTermos(true)} className="underline" style={{ color: T.goldSoft }}>Termos de Uso</button>.
+            </span>
+          </label>
+        )}
+
         {err && <p style={{ color: T.red }} className="text-xs mb-3 text-center">{err}</p>}
         {info && <p style={{ color: T.green }} className="text-xs mb-3 text-center">{info}</p>}
 
         <SubmitButton
           valid={valid}
           busy={busy}
-          label={mode === "login" ? "Entrar" : "Enviar link de redefinição"}
+          label={mode === "login" ? "Entrar" : mode === "cadastro" ? "Criar conta" : "Enviar link de redefinição"}
           busyLabel="Aguarda…"
           missing={faltando.join(", ")}
           onClick={submit}
         />
 
-        {mode === "esqueci" ? (
-          <button onClick={() => { setMode("login"); setErr(""); setInfo(""); }} className="w-full text-center text-xs mt-4" style={{ color: T.goldSoft }}>
-            Voltar para o login
+        {mode !== "login" ? (
+          <button onClick={() => { setMode("login"); setErr(""); setInfo(""); }} className="w-full text-center text-xs mt-4 py-2" style={{ color: T.goldSoft }}>
+            Já tenho conta: voltar para o login
+          </button>
+        ) : permitirCadastro ? (
+          <button onClick={() => { setMode("cadastro"); setErr(""); setInfo(""); }} className="w-full text-center text-xs mt-4 py-2" style={{ color: T.goldSoft }}>
+            Não tem conta? <b>Criar conta grátis</b>
           </button>
         ) : (
           <p style={{ color: T.muted }} className="text-center text-xs mt-4">Esqueceu a senha? Fale com quem te deu acesso ao AGIOPAY.</p>
