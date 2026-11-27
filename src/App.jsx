@@ -2290,6 +2290,41 @@ function docValido(v) {
   return (d.length === 11 && cpfValido(d)) || (d.length === 14 && cnpjValido(d));
 }
 
+// só para contas liberadas: mostra o que o servidor enxerga da configuração da cobrança
+function DiagnosticoCobranca() {
+  const [estado, setEstado] = useState(null); // { carregando } | { dados } | { erro }
+  const verificar = async () => {
+    setEstado({ carregando: true });
+    try {
+      const { data } = await supabase.auth.getSession();
+      const r = await fetch("/api/diagnostico-cobranca", { headers: { Authorization: `Bearer ${data.session?.access_token || ""}` } });
+      const j = await r.json().catch(() => null);
+      if (!j) setEstado({ erro: "O servidor não respondeu (a função ainda não foi publicada neste deploy?)." });
+      else if (!r.ok) setEstado({ erro: j.erro || "Não deu para verificar." });
+      else setEstado({ dados: j });
+    } catch {
+      setEstado({ erro: "Sem conexão com o servidor." });
+    }
+  };
+  return (
+    <div style={{ borderTop: `1px solid ${T.line}` }} className="pt-5 mb-6">
+      <p style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="font-medium mb-1">Verificar cobrança (administração)</p>
+      <p style={{ color: T.muted }} className="text-xs mb-3">Mostra se o servidor está enxergando as variáveis do Asaas neste endereço. Não mostra nenhum valor secreto.</p>
+      <button onClick={verificar} disabled={estado?.carregando} style={{ background: T.paperSoft, color: T.textPaper, border: `1px solid ${T.line}` }} className="rounded-full px-4 py-2.5 text-xs font-medium disabled:opacity-50">
+        {estado?.carregando ? "Verificando…" : "Verificar agora"}
+      </button>
+      {estado?.erro && <p style={{ color: T.red }} className="text-xs mt-2">{estado.erro}</p>}
+      {estado?.dados && (
+        <div style={{ background: T.paperSoft, border: `1px solid ${T.line}` }} className="rounded-xl p-3 mt-3 space-y-1.5">
+          {Object.entries(estado.dados).map(([k, v]) => (
+            <Row key={k} label={k} value={String(v)} color={String(v).startsWith("NÃO") || String(v).startsWith("valor estranho") ? T.red : undefined} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PedirDocumento({ onConfirmar, onCancelar, busy }) {
   const [doc, setDoc] = useState("");
   const d = docDigitos(doc);
@@ -3768,6 +3803,8 @@ function AccountModal({ user, nomeUsuario, online, backupBusy, ultimoBackup, onB
             )}
           </div>
         )}
+
+        {assinaturaInfo?.status === "liberada" && <DiagnosticoCobranca />}
 
         <div style={{ borderTop: `1px solid ${T.line}` }} className="pt-5 mb-6">
           <p style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="font-medium mb-1">Tabela de cobrança</p>
