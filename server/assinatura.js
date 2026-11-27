@@ -106,3 +106,35 @@ export async function tratarEvento({ supa, corpo, agora = new Date() }) {
   if (error) throw error;
   return { ok: true, status: novo };
 }
+
+// ---- conferência direta com o Asaas (plano B do webhook) ----
+// Pergunta ao Asaas como estão as cobranças da assinatura e acerta o status da conta.
+// Serve pra liberar logo depois do pagamento e pra recuperar se algum aviso se perder.
+const PAGAS = new Set(["RECEIVED", "CONFIRMED", "RECEIVED_IN_CASH"]);
+
+export async function sincronizarAssinatura({ supa, asaas, usuario, agora = new Date() }) {
+  const { data: ass, error } = await supa.from("assinaturas").select("*").eq("user_id", usuario.id).maybeSingle();
+  if (error) throw error;
+  if (!ass) throw new ErroHttp(404, "Sua conta ainda não tem assinatura registrada.");
+  if (ass.status === "liberada") return { status: "liberada", mudou: false };
+  if (!ass.asaas_subscription_id) return { status: ass.status, mudou: false };
+
+  let sub;
+  try {
+    sub = await asaas.obterAssinatura(ass.asaas_subscription_id);
+  } catch (e) {
+    if (e.status === 404) return { status: ass.status, mudou: false };
+    throw e;
+  }
+  if (sub.status !== "ACTIVE" || sub.deleted) return { status: ass.status, mudou: false };
+
+  const lista = (await asaas.cobrancasDaAssinatura(ass.asaas_subscription_id)).data || [];
+  const vencida = lista.some((p) => p.status === "OVERDUE");
+  const paga = lista.some((p) => PAGAS.has(p.status));
+  const novo = vencida ? "atrasada" : paga ? "ativa" : ass.status;
+  if (novo === ass.status) return { status: ass.status, mudou: false };
+
+  const { error: e2 } = await supa.from("assinaturas").update({ status: novo, atualizado_em: agora.toISOString() }).eq("user_id", usuario.id);
+  if (e2) throw e2;
+  return { status: novo, mudou: true };
+}

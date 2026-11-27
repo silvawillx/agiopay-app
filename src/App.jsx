@@ -827,15 +827,37 @@ function AppInner() {
   const [erroAssinatura, setErroAssinatura] = useState("");
   const carregarAssinatura = useCallback(async () => {
     if (!userId) { setAssinatura(null); return; }
-    const { data, error: errA } = await supabase.from("assinaturas").select("status, teste_ate, asaas_customer_id").eq("user_id", userId).maybeSingle();
+    const { data, error: errA } = await supabase.from("assinaturas").select("status, teste_ate, asaas_customer_id, asaas_subscription_id").eq("user_id", userId).maybeSingle();
     if (!errA) setAssinatura(data || null);
   }, [userId]);
+  const assinaturaRef = useRef(null);
+  useEffect(() => { assinaturaRef.current = assinatura; }, [assinatura]);
+  const [msgPagamento, setMsgPagamento] = useState("");
+  // pergunta ao servidor (que pergunta ao Asaas) se já foi pago; depois relê a assinatura
+  const atualizarAssinatura = useCallback(async () => {
+    try {
+      const a = assinaturaRef.current;
+      if (a?.asaas_subscription_id && a.status !== "liberada") {
+        const { data } = await supabase.auth.getSession();
+        const r = await fetch("/api/verificar-pagamento", { method: "POST", headers: { Authorization: `Bearer ${data.session?.access_token || ""}` } });
+        const j = await r.json().catch(() => null);
+        if (r.ok && j?.mudou && j.status === "ativa") {
+          setMsgPagamento("Pagamento confirmado! Sua assinatura está ativa. Obrigado!");
+          setTimeout(() => setMsgPagamento(""), 8000);
+        }
+      }
+    } catch {
+      // sem internet ou sem o servidor: só relê o que já está no banco
+    }
+    await carregarAssinatura();
+  }, [carregarAssinatura]);
   useEffect(() => {
     carregarAssinatura();
-    const aoVoltar = () => { if (document.visibilityState === "visible") carregarAssinatura(); };
+    // ao voltar da página de pagamento, confere sozinho se já foi pago
+    const aoVoltar = () => { if (document.visibilityState === "visible") atualizarAssinatura(); };
     document.addEventListener("visibilitychange", aoVoltar);
     return () => document.removeEventListener("visibilitychange", aoVoltar);
-  }, [carregarAssinatura]);
+  }, [carregarAssinatura, atualizarAssinatura]);
   const acesso = avaliarAssinatura(assinatura);
   const [pedirDoc, setPedirDoc] = useState(false);
   const executarAssinatura = async (cpfCnpj) => {
@@ -1700,7 +1722,7 @@ function AppInner() {
         onAssinar={assinar}
         busy={assinando}
         erro={erroAssinatura}
-        onAtualizar={carregarAssinatura}
+        onAtualizar={atualizarAssinatura}
         onBackup={baixarBackup}
         backupBusy={backupBusy}
         onSair={() => supabase.auth.signOut()}
@@ -1821,7 +1843,8 @@ function AppInner() {
         </header>
 
         <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 pt-5 sm:pt-6 lg:pt-8 pb-28 lg:pb-12">
-        {acesso.emTeste && <AvisoTeste info={acesso} onAssinar={assinar} busy={assinando} />}
+        {msgPagamento && <div style={{ background: T.goldTint, color: T.textPaper, border: "1px solid #BFE3DE" }} className="rounded-xl px-4 py-3 text-sm mb-4">{msgPagamento}</div>}
+        {acesso.emTeste && <AvisoTeste info={acesso} onAssinar={assinar} busy={assinando} onAtualizar={assinatura?.asaas_subscription_id ? atualizarAssinatura : null} />}
         {erroAssinatura && <p style={{ color: T.red }} className="text-xs mb-3">{erroAssinatura}</p>}
         <StatusConexao online={online} pendentes={fila.length} sincronizando={sincronizando} copiaDe={copiaDe} onEnviar={async () => { if (await sincronizar()) loadClients(); }} />
 
@@ -2360,16 +2383,21 @@ function PedirDocumento({ onConfirmar, onCancelar, busy }) {
   );
 }
 
-function AvisoTeste({ info, onAssinar, busy }) {
+function AvisoTeste({ info, onAssinar, busy, onAtualizar }) {
   const d = info.diasRestantes;
   return (
     <div style={{ background: T.amberTint, color: T.textPaper, border: "1px solid #F3D9B1" }} className="rounded-xl px-4 py-3 text-sm mb-4 flex flex-wrap items-center justify-between gap-2">
       <span>
         <b>Teste grátis:</b> {d > 1 ? `faltam ${d} dias` : d === 1 ? "falta 1 dia" : "termina hoje"}. Depois disso é preciso assinar para continuar criando e alterando empréstimos.
       </span>
-      <button onClick={onAssinar} disabled={busy} style={{ background: T.green, color: T.onColor }} className="rounded-full px-4 py-2.5 text-xs font-medium disabled:opacity-50">
-        {busy ? "Aguarde…" : "Assinar agora"}
-      </button>
+      <span className="flex items-center gap-3 flex-wrap">
+        {onAtualizar && (
+          <button onClick={onAtualizar} style={{ color: T.muted }} className="text-xs underline py-2.5">Já paguei? Atualizar</button>
+        )}
+        <button onClick={onAssinar} disabled={busy} style={{ background: T.green, color: T.onColor }} className="rounded-full px-4 py-2.5 text-xs font-medium disabled:opacity-50">
+          {busy ? "Aguarde…" : "Assinar agora"}
+        </button>
+      </span>
     </div>
   );
 }
