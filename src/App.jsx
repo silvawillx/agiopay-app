@@ -79,7 +79,7 @@ function Avatar({ nome = "", claro = false }) {
   return (
     <span
       style={{ background: claro ? T.goldTint : T.navSoft, color: claro ? T.goldSoft : T.navAccent, fontFamily: FONT_DISPLAY }}
-      className="w-10 h-10 shrink-0 rounded-full flex items-center justify-center text-sm font-bold"
+      className="w-9 h-9 min-[360px]:w-10 min-[360px]:h-10 shrink-0 rounded-full flex items-center justify-center text-sm font-bold"
     >
       {iniciais}
     </span>
@@ -1713,7 +1713,7 @@ function AppInner() {
   const irPara = (key) => { setView(key); setSelectedId(null); setShowNotif(false); window.scrollTo({ top: 0 }); };
   const sino = (
     <div className="relative">
-      <button onClick={() => setShowNotif((s) => !s)} title="Notificações" aria-label="Notificações" style={{ ...CARD, color: T.textInk }} className="flex items-center justify-center rounded-full w-10 h-10 active:scale-95 transition-transform relative">
+      <button onClick={() => setShowNotif((s) => !s)} title="Notificações" aria-label="Notificações" style={{ ...CARD, color: T.textInk }} className="flex items-center justify-center rounded-full w-9 h-9 min-[360px]:w-10 min-[360px]:h-10 active:scale-95 transition-transform relative">
         <Bell size={17} />
         {notifItens.length > 0 && (
           <span style={{ background: T.red, color: T.onColor, boxShadow: `0 0 0 2px ${T.ink}` }} className="absolute -top-1 -right-1 min-w-[18px] h-[18px] rounded-full text-[10px] font-semibold flex items-center justify-center px-1">
@@ -1790,22 +1790,22 @@ function AppInner() {
       <div className="lg:pl-64">
         {/* ---- topo ---- */}
         <header style={{ background: T.ink, borderBottom: `1px solid ${T.line}`, paddingTop: "env(safe-area-inset-top)" }} className="sticky top-0 z-40">
-          <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-3">
+          <div className="max-w-6xl mx-auto px-3 min-[360px]:px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-2 min-[360px]:gap-3">
             <div className="lg:hidden"><Logo /></div>
             <div className="hidden lg:block min-w-0">
               <h1 style={{ fontFamily: FONT_DISPLAY, color: T.textInk }} className="text-xl font-bold tracking-tight truncate">{tituloTela}</h1>
               <p style={{ color: T.muted }} className="text-xs first-letter:uppercase">{new Date().toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "long" })}</p>
             </div>
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex items-center gap-1.5 min-[360px]:gap-2 shrink-0">
               {sino}
-              <button onClick={() => setShowAdd(true)} title="Novo cliente" aria-label="Novo cliente" style={{ background: T.gold, color: T.onColor }} className="lg:hidden flex items-center justify-center gap-1.5 rounded-full h-10 w-10 sm:w-auto sm:px-4 text-sm font-semibold active:scale-95 transition-transform">
+              <button onClick={() => setShowAdd(true)} title="Novo cliente" aria-label="Novo cliente" style={{ background: T.gold, color: T.onColor }} className="lg:hidden flex items-center justify-center gap-1.5 rounded-full h-9 w-9 min-[360px]:h-10 min-[360px]:w-10 sm:w-auto sm:px-4 text-sm font-semibold active:scale-95 transition-transform">
                 <Plus size={17} strokeWidth={2.5} />
                 <span className="hidden sm:inline">Cliente</span>
               </button>
               <button onClick={() => setShowAccount(true)} title="Minha conta" aria-label="Minha conta" className="lg:hidden rounded-full active:scale-95 transition-transform">
                 <Avatar nome={nomeUsuario || user.email} claro />
               </button>
-              <button onClick={() => sair()} title="Sair" aria-label="Sair" style={{ ...CARD, color: T.muted }} className="lg:hidden flex items-center justify-center rounded-full w-10 h-10 active:scale-95 transition-transform">
+              <button onClick={() => sair()} title="Sair" aria-label="Sair" style={{ ...CARD, color: T.muted }} className="lg:hidden flex items-center justify-center rounded-full w-9 h-9 min-[360px]:w-10 min-[360px]:h-10 active:scale-95 transition-transform">
                 <LogOut size={16} />
               </button>
             </div>
@@ -1926,7 +1926,7 @@ function AppInner() {
                       onChange={(e) => { if (e.target.files?.[0]) importarCSV(e.target.files[0]); e.target.value = ""; }}
                     />
                   </label>
-                  <button onClick={baixarModeloCSV} className="text-xs underline" style={{ color: T.goldSoft }}>
+                  <button onClick={baixarModeloCSV} className="text-xs underline py-2.5" style={{ color: T.goldSoft }}>
                     baixar modelo
                   </button>
                 </div>
@@ -2162,7 +2162,7 @@ function TabelaCobranca({ vezesInicial, jurosInicial, onClose }) {
       <div style={{ background: T.paper }} className="relative w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-5 max-h-[90dvh] overflow-y-auto">
         <div className="flex items-center justify-between mb-4">
           <h2 style={{ color: T.textPaper, fontFamily: "'Fraunces', serif" }} className="text-xl font-semibold">Tabela de cobrança</h2>
-          <button onClick={onClose} aria-label="Fechar"><X size={20} style={{ color: T.muted }} /></button>
+          <button onClick={onClose} aria-label="Fechar" className="p-2 -m-2"><X size={20} style={{ color: T.muted }} /></button>
         </div>
 
         <div className="grid grid-cols-2 gap-x-3">
@@ -2207,10 +2207,10 @@ function TabelaCobranca({ vezesInicial, jurosInicial, onClose }) {
         )}
 
         <div className="flex flex-wrap items-center gap-2">
-          <button onClick={baixarImagem} disabled={linhas.length === 0} style={{ background: T.green, color: T.onColor }} className="rounded-full px-4 py-2 text-xs font-medium disabled:opacity-50">
+          <button onClick={baixarImagem} disabled={linhas.length === 0} style={{ background: T.green, color: T.onColor }} className="rounded-full px-4 py-2.5 text-xs font-medium disabled:opacity-50">
             Baixar imagem
           </button>
-          <button onClick={copiar} disabled={linhas.length === 0} style={{ background: T.paperSoft, color: T.textPaper, border: `1px solid ${T.line}` }} className="rounded-full px-4 py-2 text-xs font-medium disabled:opacity-50">
+          <button onClick={copiar} disabled={linhas.length === 0} style={{ background: T.paperSoft, color: T.textPaper, border: `1px solid ${T.line}` }} className="rounded-full px-4 py-2.5 text-xs font-medium disabled:opacity-50">
             Copiar texto
           </button>
           {msg && <span style={{ color: T.muted }} className="text-xs">{msg}</span>}
@@ -2259,7 +2259,7 @@ function AvisoTeste({ info, onAssinar, busy }) {
       <span>
         <b>Teste grátis:</b> {d > 1 ? `faltam ${d} dias` : d === 1 ? "falta 1 dia" : "termina hoje"}. Depois disso é preciso assinar para continuar criando e alterando empréstimos.
       </span>
-      <button onClick={onAssinar} disabled={busy} style={{ background: T.green, color: T.onColor }} className="rounded-full px-4 py-1.5 text-xs font-medium disabled:opacity-50">
+      <button onClick={onAssinar} disabled={busy} style={{ background: T.green, color: T.onColor }} className="rounded-full px-4 py-2.5 text-xs font-medium disabled:opacity-50">
         {busy ? "Aguarde…" : "Assinar agora"}
       </button>
     </div>
@@ -2284,15 +2284,15 @@ function PaywallScreen({ info, email, onAssinar, busy, erro, onAtualizar, onBack
           {busy ? "Aguarde…" : "Assinar"}
         </button>
         {erro && <p style={{ color: T.red }} className="text-xs mt-2">{erro}</p>}
-        <button onClick={onAtualizar} style={{ color: T.muted }} className="mt-3 text-xs underline">Já paguei, atualizar</button>
+        <button onClick={onAtualizar} style={{ color: T.muted }} className="mt-1 py-2.5 px-2 text-xs underline">Já paguei, atualizar</button>
         <div style={{ borderTop: `1px solid ${T.line}` }} className="mt-5 pt-4">
           <p style={{ color: T.muted }} className="text-xs mb-2">Seus dados continuam guardados. Você pode baixar uma cópia a qualquer momento.</p>
-          <button onClick={onBackup} disabled={backupBusy} style={{ background: T.paperSoft, color: T.textPaper, border: `1px solid ${T.line}` }} className="rounded-full px-4 py-2 text-xs font-medium disabled:opacity-50">
+          <button onClick={onBackup} disabled={backupBusy} style={{ background: T.paperSoft, color: T.textPaper, border: `1px solid ${T.line}` }} className="rounded-full px-4 py-2.5 text-xs font-medium disabled:opacity-50">
             {backupBusy ? "Aguarde…" : "Baixar meus dados"}
           </button>
         </div>
         <p style={{ color: T.muted }} className="text-xs mt-4">Conta: {email}</p>
-        <button onClick={onSair} style={{ color: T.muted }} className="mt-1 text-xs underline">Sair</button>
+        <button onClick={onSair} style={{ color: T.muted }} className="py-2.5 px-3 text-xs underline">Sair</button>
       </div>
     </div>
   );
@@ -2319,16 +2319,16 @@ function ClientDossie({ client, onBack, onEditClient, onDeleteClient, onAddLoan,
 
   return (
     <div>
-      <button onClick={onBack} className="flex items-center gap-1.5 mb-4 text-sm" style={{ color: T.textInk }}>
+      <button onClick={onBack} className="flex items-center gap-1.5 mb-2 py-2 pr-4 text-sm" style={{ color: T.textInk }}>
         <ArrowLeft size={15} /> Voltar
       </button>
 
       <div style={CARD} className="rounded-2xl p-4 sm:p-5 mb-4">
         <div className="flex items-start justify-between gap-2 mb-1">
-          <h2 style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="text-xl sm:text-2xl font-semibold truncate">{client.nome}</h2>
+          <h2 style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="text-xl sm:text-2xl font-semibold min-w-0 break-words">{client.nome}</h2>
           <div className="flex items-center gap-3 shrink-0">
-            <button onClick={onExportPDF} title="Exportar PDF"><FileDown size={17} style={{ color: T.muted }} /></button>
-            <button onClick={() => setEditingClient(true)} title="Editar cliente"><Pencil size={17} style={{ color: T.muted }} /></button>
+            <button onClick={onExportPDF} title="Exportar PDF" aria-label="Exportar PDF" className="p-2 -m-2"><FileDown size={17} style={{ color: T.muted }} /></button>
+            <button onClick={() => setEditingClient(true)} title="Editar cliente" aria-label="Editar cliente" className="p-2 -m-2"><Pencil size={17} style={{ color: T.muted }} /></button>
           </div>
         </div>
         {client.telefone && <p style={{ color: T.muted }} className="text-sm mb-2">{client.telefone}</p>}
@@ -2358,7 +2358,7 @@ function ClientDossie({ client, onBack, onEditClient, onDeleteClient, onAddLoan,
 
       <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
         <p style={{ color: T.textInk }} className="text-sm font-medium">Histórico de empréstimos</p>
-        <button onClick={() => setAddingLoan(true)} style={{ background: T.gold, color: T.onColor }} className="flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-medium whitespace-nowrap shrink-0">
+        <button onClick={() => setAddingLoan(true)} style={{ background: T.gold, color: T.onColor }} className="flex items-center gap-1 rounded-full px-3.5 py-2.5 text-xs font-medium whitespace-nowrap shrink-0">
           <Plus size={13} strokeWidth={2.5} /> Novo empréstimo
         </button>
       </div>
@@ -2441,7 +2441,7 @@ function MiniStat({ label, value, color }) {
   return (
     <div style={{ background: T.paperSoft }} className="rounded-lg p-2.5">
       <div style={{ color: T.muted }} className="text-[10px] uppercase tracking-wide mb-0.5">{label}</div>
-      <div style={{ color: color || T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="text-sm font-semibold tabular-nums truncate">{value}</div>
+      <div style={{ color: color || T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="text-[clamp(11px,3.4vw,14px)] sm:text-sm font-semibold tabular-nums truncate">{value}</div>
     </div>
   );
 }
@@ -2494,9 +2494,9 @@ function LoanCard({ loan, expanded, onToggle, onPay, onEditPayment, onRemovePaym
     <div style={CARD} className="rounded-2xl overflow-hidden">
       <button onClick={onToggle} className="w-full flex items-center justify-between px-4 py-3.5 text-left">
         <div className="min-w-0">
-          <div style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="font-medium truncate flex items-center gap-1.5">
-            {fmt(loan.valor)} emprestado
-            {calc.atrasado && <AlertTriangle size={12} style={{ color: T.red }} />}
+          <div style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="font-medium flex items-start gap-1.5">
+            <span className="min-w-0">{fmt(loan.valor)} emprestado</span>
+            {calc.atrasado && <AlertTriangle size={12} style={{ color: T.red }} className="mt-1.5 shrink-0" />}
           </div>
           <div style={{ color: calc.atrasado ? T.red : T.muted, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="text-xs mt-0.5">
             {fmtData(loan.dataEmprestimo)} · {subtitulo}
@@ -2554,7 +2554,7 @@ function LoanCard({ loan, expanded, onToggle, onPay, onEditPayment, onRemovePaym
 
           {!positivo && (
             <div className="flex flex-wrap gap-2 mt-3">
-              <button onClick={() => setConfirmQuitar(true)} style={{ background: T.green, color: T.onColor }} className="flex items-center gap-1 rounded-full px-3.5 py-1.5 text-xs font-medium">
+              <button onClick={() => setConfirmQuitar(true)} style={{ background: T.green, color: T.onColor }} className="flex items-center gap-1 rounded-full px-3.5 py-2.5 text-xs font-medium">
                 <CheckCheck size={13} /> Quitar empréstimo
               </button>
               {calc.parcelado && !loan.parcelasMensais && calc.atrasadas.length > 0 && (
@@ -2642,10 +2642,10 @@ function LoanCard({ loan, expanded, onToggle, onPay, onEditPayment, onRemovePaym
           )}
 
           <div className="flex items-center gap-4 mt-3 pt-3" style={{ borderTop: `1px solid ${T.line}` }}>
-            <button onClick={onEdit} className="flex items-center gap-1 text-xs" style={{ color: T.muted }}>
+            <button onClick={onEdit} className="flex items-center gap-1 text-xs py-2.5" style={{ color: T.muted }}>
               <Pencil size={12} /> Editar
             </button>
-            <button onClick={() => setConfirmRemove(true)} className="flex items-center gap-1 text-xs" style={{ color: T.red }}>
+            <button onClick={() => setConfirmRemove(true)} className="flex items-center gap-1 text-xs py-2.5" style={{ color: T.red }}>
               <Trash2 size={12} /> Remover empréstimo
             </button>
           </div>
@@ -2747,10 +2747,10 @@ function BaixaControls({ parcela: p, onBaixar, onCancelar }) {
     return (
       <div className="flex items-center gap-1.5">
         <DecimalField value={valor} onChange={setValor} className="w-24! py-1.5!" />
-        <button onClick={confirmar} disabled={!(v > 0) || enviando} title="Confirmar baixa" style={{ background: v > 0 ? T.green : T.line, color: v > 0 ? T.onColor : T.muted }} className="rounded-full w-8 h-8 flex items-center justify-center shrink-0 disabled:cursor-not-allowed">
+        <button onClick={confirmar} disabled={!(v > 0) || enviando} title="Confirmar baixa" style={{ background: v > 0 ? T.green : T.line, color: v > 0 ? T.onColor : T.muted }} className="rounded-full w-9 h-9 flex items-center justify-center shrink-0 disabled:cursor-not-allowed">
           <Check size={14} />
         </button>
-        <button onClick={() => setEditando(false)} title="Desistir" style={{ color: T.muted }} className="shrink-0"><X size={14} /></button>
+        <button onClick={() => setEditando(false)} title="Desistir" style={{ color: T.muted }} className="shrink-0 p-2"><X size={14} /></button>
       </div>
     );
   }
@@ -2758,7 +2758,7 @@ function BaixaControls({ parcela: p, onBaixar, onCancelar }) {
   return (
     <div className="flex items-center gap-2">
       {p.pago > 0 && (
-        <button onClick={() => setConfirmCancelar(true)} style={{ color: T.red }} className="flex items-center gap-1 text-xs whitespace-nowrap">
+        <button onClick={() => setConfirmCancelar(true)} style={{ color: T.red }} className="flex items-center gap-1 text-xs whitespace-nowrap py-2">
           <Undo2 size={12} /> Cancelar baixa
         </button>
       )}
@@ -2766,7 +2766,7 @@ function BaixaControls({ parcela: p, onBaixar, onCancelar }) {
         <button
           onClick={() => { setValor(String(Math.round(p.restante * 100) / 100)); setEditando(true); }}
           style={{ background: T.green, color: T.onColor }}
-          className="rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap"
+          className="rounded-full px-4 py-2.5 text-xs font-medium whitespace-nowrap"
         >
           Baixar
         </button>
@@ -2807,7 +2807,7 @@ function ParcelasModal({ titulo, descricao, linhas: iniciais, onClose, onSave })
       <div style={CARD} className="relative w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-5 sm:p-6 max-h-[90dvh] overflow-y-auto">
         <div className="flex items-center justify-between mb-2">
           <h2 style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="text-xl font-semibold">{titulo}</h2>
-          <button onClick={onClose}><X size={20} style={{ color: T.muted }} /></button>
+          <button onClick={onClose} aria-label="Fechar" className="p-2 -m-2"><X size={20} style={{ color: T.muted }} /></button>
         </div>
         {descricao && <p style={{ color: T.muted }} className="text-sm mb-4">{descricao}</p>}
 
@@ -2881,8 +2881,8 @@ function PaymentRow({ payment, onEdit, onRemove }) {
       <div className="flex items-center gap-2">
         {payment.pendente && <Tag cor={T.goldSoft}>a enviar</Tag>}
         <span style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }}>{fmt(payment.valor)}</span>
-        <button onClick={() => setEditing(true)} style={{ color: T.muted }} title="Corrigir valor"><Pencil size={11} /></button>
-        <button onClick={() => setConfirmRemove(true)} style={{ color: T.red }} title="Cancelar este pagamento"><Undo2 size={12} /></button>
+        <button onClick={() => setEditing(true)} style={{ color: T.muted }} title="Corrigir valor" aria-label="Corrigir valor" className="p-2.5 -m-2.5"><Pencil size={11} /></button>
+        <button onClick={() => setConfirmRemove(true)} style={{ color: T.red }} title="Cancelar este pagamento" aria-label="Cancelar este pagamento" className="p-2.5 -m-2.5"><Undo2 size={12} /></button>
       </div>
       {confirmRemove && (
         <ConfirmModal
@@ -3002,9 +3002,9 @@ function Hoje({ dados, onAbrirCliente, onBaixarParcela, onCancelarBaixa }) {
 
 function HojeStat({ label, value, color }) {
   return (
-    <div style={CARD} className="rounded-2xl p-3">
+    <div style={CARD} className="rounded-2xl p-2.5 min-[360px]:p-3">
       <div style={{ color: T.muted }} className="text-[10px] uppercase tracking-wide mb-1">{label}</div>
-      <div style={{ color: color || T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="text-sm sm:text-lg font-semibold tabular-nums truncate">{value}</div>
+      <div style={{ color: color || T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="text-[clamp(11px,3.4vw,14px)] sm:text-lg font-semibold tabular-nums truncate">{value}</div>
     </div>
   );
 }
@@ -3028,7 +3028,7 @@ function HojeRow({ item, isLast, onAbrir, onBaixar, onCancelar }) {
         {item.parcela ? (
           <BaixaControls parcela={item.parcela} onBaixar={onBaixar} onCancelar={onCancelar} />
         ) : (
-          <button onClick={onAbrir} style={{ color: T.goldSoft }} className="text-xs flex items-center gap-0.5">abrir <ChevronRight size={12} /></button>
+          <button onClick={onAbrir} style={{ color: T.goldSoft }} className="text-xs flex items-center gap-0.5 py-2.5 -my-2.5 pl-3">abrir <ChevronRight size={12} /></button>
         )}
       </div>
     </div>
@@ -3155,7 +3155,7 @@ function Caixa({ clients, onAbrirCliente }) {
     <div>
       <div className="flex flex-wrap gap-1.5 mb-3">
         {opcoes.map(([k, label]) => (
-          <button key={k} onClick={() => { setPeriodo(k); setDiaAberto(null); }} style={{ background: periodo === k ? T.gold : T.paper, color: periodo === k ? T.onColor : T.textInk, border: `1px solid ${periodo === k ? T.gold : T.line}` }} className="rounded-full px-3 py-1.5 text-xs font-medium">
+          <button key={k} onClick={() => { setPeriodo(k); setDiaAberto(null); }} style={{ background: periodo === k ? T.gold : T.paper, color: periodo === k ? T.onColor : T.textInk, border: `1px solid ${periodo === k ? T.gold : T.line}` }} className="rounded-full px-3.5 py-2 text-xs font-medium">
             {label}
           </button>
         ))}
@@ -3186,7 +3186,7 @@ function Caixa({ clients, onAbrirCliente }) {
         {dados.entradas.length} baixa{dados.entradas.length !== 1 ? "s" : ""} · {dados.saidas.length} empréstimo{dados.saidas.length !== 1 ? "s" : ""} novo{dados.saidas.length !== 1 ? "s" : ""}
         {dados.estornos.length > 0 && ` · ${dados.estornos.length} baixa${dados.estornos.length > 1 ? "s" : ""} cancelada${dados.estornos.length > 1 ? "s" : ""}`}
         {" · "}
-        <button onClick={exportar} style={{ color: T.goldSoft }} className="underline">exportar CSV</button>
+        <button onClick={exportar} style={{ color: T.goldSoft }} className="underline py-2.5">exportar CSV</button>
       </p>
 
       {dados.dias.length === 0 ? (
@@ -3258,7 +3258,7 @@ function NotifDropdown({ itens, onClose, onClickItem, onVerAgenda }) {
   return (
     <>
       <div onClick={onClose} className="fixed inset-0 z-40" />
-      <div style={{ ...CARD, border: `1px solid ${T.line}` }} className="absolute right-0 top-12 z-50 w-72 rounded-2xl overflow-hidden shadow-xl">
+      <div style={{ ...CARD, border: `1px solid ${T.line}` }} className="fixed inset-x-3 top-[calc(4.25rem+env(safe-area-inset-top))] sm:absolute sm:inset-x-auto sm:right-0 sm:top-12 z-50 sm:w-72 rounded-2xl overflow-hidden shadow-xl">
         <div style={{ borderBottom: `1px solid ${T.line}` }} className="px-4 py-3">
           <p style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="font-medium text-sm">Vencimentos de hoje e atrasados</p>
         </div>
@@ -3375,7 +3375,7 @@ function TermsModal({ onClose }) {
           <h2 style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="text-lg font-semibold flex items-center gap-2">
             <FileText size={18} /> Termos de Uso
           </h2>
-          <button onClick={onClose}><X size={20} style={{ color: T.muted }} /></button>
+          <button onClick={onClose} aria-label="Fechar" className="p-2 -m-2"><X size={20} style={{ color: T.muted }} /></button>
         </div>
         <pre style={{ color: T.textPaper, fontFamily: "'Inter', system-ui, sans-serif", whiteSpace: "pre-wrap" }} className="text-sm leading-relaxed">
           {TERMOS_TEXTO}
@@ -3528,7 +3528,7 @@ function AuthScreen({ permitirEsqueci = false }) {
                 autoComplete="current-password"
                 onKeyDown={(e) => e.key === "Enter" && submit()}
               />
-              <button type="button" onClick={() => setShowSenha((s) => !s)} className="absolute right-3 top-1/2 -translate-y-1/2" style={{ color: T.muted }}>
+              <button type="button" onClick={() => setShowSenha((s) => !s)} aria-label="Mostrar ou esconder a senha" className="absolute right-1 top-1/2 -translate-y-1/2 p-2.5" style={{ color: T.muted }}>
                 {showSenha ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
             </div>
@@ -3561,7 +3561,7 @@ function AuthScreen({ permitirEsqueci = false }) {
           <p style={{ color: T.muted }} className="text-center text-xs mt-4">Esqueceu a senha? Fale com quem te deu acesso ao AGIOPAY.</p>
         )}
 
-        <button onClick={() => setShowTermos(true)} className="w-full text-center text-[11px] mt-3 flex items-center justify-center gap-1" style={{ color: T.muted }}>
+        <button onClick={() => setShowTermos(true)} className="w-full text-center text-[11px] mt-1 py-2.5 flex items-center justify-center gap-1" style={{ color: T.muted }}>
           <FileText size={11} /> Ver Termos de Uso
         </button>
       </div>
@@ -3631,7 +3631,7 @@ function AccountModal({ user, nomeUsuario, online, backupBusy, ultimoBackup, onB
           <h2 style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="text-xl font-semibold flex items-center gap-2">
             <UserCircle size={20} /> Minha conta
           </h2>
-          <button onClick={onClose}><X size={20} style={{ color: T.muted }} /></button>
+          <button onClick={onClose} aria-label="Fechar" className="p-2 -m-2"><X size={20} style={{ color: T.muted }} /></button>
         </div>
 
         <p style={{ color: T.muted }} className="text-xs uppercase tracking-wide mb-1">Email</p>
@@ -3656,7 +3656,7 @@ function AccountModal({ user, nomeUsuario, online, backupBusy, ultimoBackup, onB
               {!assinaturaInfo.liberado && "Sua assinatura precisa ser regularizada."}
             </p>
             {(assinaturaInfo.emTeste || !assinaturaInfo.liberado) && (
-              <button onClick={onAssinar} disabled={assinando} style={{ background: T.green, color: T.onColor }} className="rounded-full px-4 py-2 text-xs font-medium disabled:opacity-50">
+              <button onClick={onAssinar} disabled={assinando} style={{ background: T.green, color: T.onColor }} className="rounded-full px-4 py-2.5 text-xs font-medium disabled:opacity-50">
                 {assinando ? "Aguarde…" : "Assinar"}
               </button>
             )}
@@ -3666,7 +3666,7 @@ function AccountModal({ user, nomeUsuario, online, backupBusy, ultimoBackup, onB
         <div style={{ borderTop: `1px solid ${T.line}` }} className="pt-5 mb-6">
           <p style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="font-medium mb-1">Tabela de cobrança</p>
           <p style={{ color: T.muted }} className="text-xs mb-3">Monte uma tabela de valor × vezes × parcela para mostrar ao cliente. Dá para baixar como imagem ou copiar o texto.</p>
-          <button onClick={() => setShowTabela(true)} style={{ background: T.green, color: T.onColor }} className="rounded-full px-4 py-2 text-xs font-medium">Abrir tabela</button>
+          <button onClick={() => setShowTabela(true)} style={{ background: T.green, color: T.onColor }} className="rounded-full px-4 py-2.5 text-xs font-medium">Abrir tabela</button>
           {showTabela && <TabelaCobranca onClose={() => setShowTabela(false)} />}
         </div>
 
@@ -3677,10 +3677,10 @@ function AccountModal({ user, nomeUsuario, online, backupBusy, ultimoBackup, onB
             {" "}Último backup: <b>{ultimoBackup ? new Date(ultimoBackup).toLocaleDateString("pt-BR") : "nunca"}</b>.
           </p>
           <div className="flex flex-wrap gap-2">
-            <button onClick={onBaixarBackup} disabled={!online || backupBusy} style={{ background: T.green, color: T.onColor }} className="rounded-full px-4 py-2 text-xs font-medium disabled:opacity-50">
+            <button onClick={onBaixarBackup} disabled={!online || backupBusy} style={{ background: T.green, color: T.onColor }} className="rounded-full px-4 py-2.5 text-xs font-medium disabled:opacity-50">
               {backupBusy ? "Aguarde…" : "Baixar backup"}
             </button>
-            <label style={{ background: T.paperSoft, color: T.textPaper, border: `1px solid ${T.line}`, opacity: !online || backupBusy ? 0.5 : 1 }} className="rounded-full px-4 py-2 text-xs font-medium cursor-pointer">
+            <label style={{ background: T.paperSoft, color: T.textPaper, border: `1px solid ${T.line}`, opacity: !online || backupBusy ? 0.5 : 1 }} className="rounded-full px-4 py-2.5 text-xs font-medium cursor-pointer">
               Restaurar de um backup
               <input
                 type="file"
@@ -3720,7 +3720,7 @@ function AccountModal({ user, nomeUsuario, online, backupBusy, ultimoBackup, onB
                   onChange={(e) => setNovaSenha(e.target.value)}
                   placeholder="mínimo 6 caracteres"
                 />
-                <button type="button" onClick={() => setShowSenha((s) => !s)} className="absolute right-3 top-1/2 -translate-y-1/2" style={{ color: T.muted }}>
+                <button type="button" onClick={() => setShowSenha((s) => !s)} aria-label="Mostrar ou esconder a senha" className="absolute right-1 top-1/2 -translate-y-1/2 p-2.5" style={{ color: T.muted }}>
                   {showSenha ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
               </div>
@@ -3782,7 +3782,7 @@ function NovaSenhaScreen({ onDone }) {
             <Field label="Nova senha">
               <div className="relative">
                 <input style={inputStyle} type={showSenha ? "text" : "password"} className="w-full rounded-lg px-3 py-2.5 pr-10 text-sm outline-none" value={senha} onChange={(e) => setSenha(e.target.value)} placeholder="mínimo 6 caracteres" />
-                <button type="button" onClick={() => setShowSenha((s) => !s)} className="absolute right-3 top-1/2 -translate-y-1/2" style={{ color: T.muted }}>
+                <button type="button" onClick={() => setShowSenha((s) => !s)} aria-label="Mostrar ou esconder a senha" className="absolute right-1 top-1/2 -translate-y-1/2 p-2.5" style={{ color: T.muted }}>
                   {showSenha ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
               </div>
@@ -3867,7 +3867,7 @@ function Dashboard({ totals, count, atrasadosList, evolucao, onVerClientes, onAd
               : `${totals.atrasados} cliente${totals.atrasados > 1 ? "s" : ""} atrasado${totals.atrasados > 1 ? "s" : ""}`}
           </span>
         </div>
-        <button onClick={onVerClientes} className="text-xs underline opacity-90">ver todos</button>
+        <button onClick={onVerClientes} className="text-xs underline opacity-90 py-2.5 pl-2">ver todos</button>
       </div>
 
       {atrasadosList.length > 0 && (
@@ -4241,10 +4241,10 @@ function PresetChips({ presets, onPick, onSave, onRemove, podeSalvar }) {
             style={{ background: T.paperSoft, border: `1px solid ${T.line}` }}
             className="flex items-center gap-1 rounded-full pl-3 pr-1.5 py-1"
           >
-            <button onClick={() => onPick(p)} style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="text-xs">
+            <button onClick={() => onPick(p)} style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="text-xs py-2">
               {p.taxaJuros}% / {p.prazoDias}d
             </button>
-            <button onClick={() => onRemove(i)} style={{ color: T.muted }} title="Remover modelo">
+            <button onClick={() => onRemove(i)} style={{ color: T.muted }} title="Remover modelo" aria-label="Remover modelo" className="p-2 -m-2">
               <X size={11} />
             </button>
           </div>
@@ -4254,7 +4254,7 @@ function PresetChips({ presets, onPick, onSave, onRemove, podeSalvar }) {
             onClick={onSave}
             disabled={!podeSalvar}
             style={{ background: "transparent", border: `1px dashed ${T.line}`, color: T.goldSoft }}
-            className="flex items-center gap-1 rounded-full px-3 py-1 text-xs disabled:opacity-40"
+            className="flex items-center gap-1 rounded-full px-3.5 py-2.5 text-xs disabled:opacity-40"
           >
             <Plus size={11} /> salvar atual
           </button>
@@ -4276,7 +4276,7 @@ function DiasCobrancaPicker({ dias, onChange, titulo = "Dias de cobrança" }) {
         {atalhos.map(([label, ds]) => {
           const ativo = ds.join(",") === chave;
           return (
-            <button key={label} type="button" onClick={() => onChange(ds)} style={{ background: ativo ? T.goldTint : T.paperSoft, color: ativo ? T.goldSoft : T.textPaper, border: `1px solid ${ativo ? T.gold : T.line}` }} className="rounded-full px-3 py-1 text-xs">
+            <button key={label} type="button" onClick={() => onChange(ds)} style={{ background: ativo ? T.goldTint : T.paperSoft, color: ativo ? T.goldSoft : T.textPaper, border: `1px solid ${ativo ? T.gold : T.line}` }} className="rounded-full px-3.5 py-2 text-xs">
               {label}
             </button>
           );
@@ -4286,7 +4286,7 @@ function DiasCobrancaPicker({ dias, onChange, titulo = "Dias de cobrança" }) {
         {DIAS_SEMANA.map((nome, d) => {
           const ativo = dias.includes(d);
           return (
-            <button key={d} type="button" onClick={() => toggle(d)} style={{ background: ativo ? T.gold : T.paperSoft, color: ativo ? T.onColor : T.muted, border: `1px solid ${ativo ? T.gold : T.line}` }} className="rounded-lg py-1.5 text-xs font-medium">
+            <button key={d} type="button" onClick={() => toggle(d)} style={{ background: ativo ? T.gold : T.paperSoft, color: ativo ? T.onColor : T.muted, border: `1px solid ${ativo ? T.gold : T.line}` }} className="rounded-lg py-2.5 text-xs font-medium">
               {nome}
             </button>
           );
@@ -4463,7 +4463,7 @@ function LoanFields({ form, setForm, editando, presets = [], onSavePreset, onRem
       {!editando && (
         <div className="grid grid-cols-2 gap-1 mb-4 p-1 rounded-2xl" style={{ background: T.paperSoft, border: `1px solid ${T.line}` }}>
           {[["pagdiario", "Pagamento diário"], ["diario", "Juros diário"], ["mensal", "Parcelado mensal"], ["unico", "Pagamento único"]].map(([k, label]) => (
-            <button key={k} type="button" onClick={() => set("tipo")(k)} style={{ background: form.tipo === k ? T.paper : "transparent", color: form.tipo === k ? T.goldSoft : T.muted, boxShadow: form.tipo === k ? T.shadow : "none" }} className="rounded-full py-1.5 text-xs font-medium">
+            <button key={k} type="button" onClick={() => set("tipo")(k)} style={{ background: form.tipo === k ? T.paper : "transparent", color: form.tipo === k ? T.goldSoft : T.muted, boxShadow: form.tipo === k ? T.shadow : "none" }} className="rounded-full py-2.5 text-xs font-medium">
               {label}
             </button>
           ))}
@@ -4503,7 +4503,7 @@ function LoanFields({ form, setForm, editando, presets = [], onSavePreset, onRem
 
           <ResumoAoVivo r={prevPagDiario} />
 
-          <button type="button" onClick={() => setMostrarTabela(true)} style={{ color: T.green }} className="text-xs font-medium mb-4">
+          <button type="button" onClick={() => setMostrarTabela(true)} style={{ color: T.green }} className="text-xs font-medium mb-2 py-2.5">
             Ver tabela de valores
           </button>
           {mostrarTabela && <TabelaCobranca vezesInicial={form.qtdParcelas} jurosInicial={form.taxaJuros} onClose={() => setMostrarTabela(false)} />}
@@ -4687,7 +4687,7 @@ function ClientLoanForm({ title, initial, onClose, onSave, presets = [], onSaveP
       <div style={CARD} className="relative w-full sm:max-w-lg rounded-t-3xl sm:rounded-3xl p-5 sm:p-6 max-h-[90dvh] overflow-y-auto">
         <div className="flex items-center justify-between mb-5">
           <h2 style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="text-xl font-semibold">{title}</h2>
-          <button onClick={onClose}><X size={20} style={{ color: T.muted }} /></button>
+          <button onClick={onClose} aria-label="Fechar" className="p-2 -m-2"><X size={20} style={{ color: T.muted }} /></button>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3">
@@ -4735,7 +4735,7 @@ function LoanForm({ title, initial, editando = false, onClose, onSave, presets =
       <div style={CARD} className="relative w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-5 sm:p-6 max-h-[90dvh] overflow-y-auto">
         <div className="flex items-center justify-between mb-5">
           <h2 style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="text-xl font-semibold">{title}</h2>
-          <button onClick={onClose}><X size={20} style={{ color: T.muted }} /></button>
+          <button onClick={onClose} aria-label="Fechar" className="p-2 -m-2"><X size={20} style={{ color: T.muted }} /></button>
         </div>
 
         <LoanFields form={form} setForm={setForm} editando={editando} presets={presets} onSavePreset={onSavePreset} onRemovePreset={onRemovePreset} />
@@ -4758,7 +4758,7 @@ function EditClientForm({ initial, onClose, onSave }) {
       <div style={CARD} className="relative w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-5 sm:p-6 max-h-[90dvh] overflow-y-auto">
         <div className="flex items-center justify-between mb-5">
           <h2 style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="text-xl font-semibold">Editar cliente</h2>
-          <button onClick={onClose}><X size={20} style={{ color: T.muted }} /></button>
+          <button onClick={onClose} aria-label="Fechar" className="p-2 -m-2"><X size={20} style={{ color: T.muted }} /></button>
         </div>
         <Field label="Nome">
           <input style={inputStyle} className="w-full rounded-lg px-3 py-2.5 text-sm outline-none" value={form.nome} onChange={(e) => setForm({ ...form, nome: e.target.value })} />
@@ -4809,7 +4809,7 @@ function ResumoAoVivo({ r }) {
           <div style={{ borderTop: `1px solid ${T.line}` }} className="pt-2 mt-1">
             <p style={{ color: T.muted }} className="text-[11px] uppercase tracking-wide mb-1">O que falar pro devedor</p>
             <p style={{ color: T.textPaper }} className="text-xs leading-relaxed">{r.frase}</p>
-            <button type="button" onClick={copiar} style={{ color: T.green }} className="text-xs font-medium mt-1.5">
+            <button type="button" onClick={copiar} style={{ color: T.green }} className="text-xs font-medium mt-1 py-2">
               {copiado ? "Copiado ✓" : "Copiar texto"}
             </button>
           </div>
