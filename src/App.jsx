@@ -3912,6 +3912,10 @@ function traduzErro(msg) {
   if (m.includes("password should be at least")) return "A senha precisa ter pelo menos 6 caracteres.";
   if (m.includes("email not confirmed")) return "Confirme seu email antes de entrar (verifique a caixa de entrada).";
   if (m.includes("same password")) return "A nova senha precisa ser diferente da atual.";
+  if (m.includes("signups not allowed") || m.includes("signup is disabled")) return "O cadastro de contas novas está desativado no momento. Fale com o suporte do AGIOPAY.";
+  if (m.includes("rate limit") || m.includes("too many requests") || m.includes("security purposes")) return "Muitas tentativas seguidas. Aguarde alguns minutos e tente de novo.";
+  if (m.includes("unable to validate email") || (m.includes("email address") && m.includes("invalid"))) return "Esse email não parece válido. Confira e tente de novo.";
+  if (m.includes("weak password") || m.includes("password is known to be weak") || m.includes("pwned")) return "Essa senha é fraca ou já apareceu em vazamentos. Escolha outra.";
   return msg || "Algo deu errado. Tente de novo.";
 }
 
