@@ -1,14 +1,10 @@
 -- AGIOPAY — schema Supabase (Postgres) com Row Level Security
--- Versão 2: cada cliente pode ter VÁRIOS empréstimos ao longo do tempo (dossiê).
+-- Versão 3: inclui parcelas, estorno de pagamentos, opções de cobrança,
+-- CPF e endereço opcionais do cliente. Cada cliente pode ter VÁRIOS empréstimos (dossiê).
 --
--- Se você já rodou a versão 1 deste schema antes (tabelas clientes/pagamentos
--- antigas, com o empréstimo dentro da própria tabela clientes), rode primeiro:
---
---   drop table if exists pagamentos cascade;
---   drop table if exists clientes cascade;
---
--- e depois cole e rode tudo abaixo. Isso apaga dados de teste antigos —
--- normal nessa fase, não faça isso depois que tiver dados reais sem backup.
+-- Use este arquivo para criar um projeto novo do zero. Num banco que já tem
+-- dados, NÃO rode isto: use as migrações incrementais em
+-- supabase_migration_security.sql.
 
 create table clientes (
   id uuid primary key default gen_random_uuid(),
@@ -16,7 +12,9 @@ create table clientes (
   nome text not null check (length(trim(nome)) > 0),
   telefone text,
   observacoes text,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  cpf text check (cpf is null or cpf ~ '^[0-9]{11}$'),  -- opcional, só dígitos
+  endereco text                                          -- opcional
 );
 
 create table emprestimos (
@@ -30,6 +28,11 @@ create table emprestimos (
   garantia text,
   dias_cobranca smallint[],            -- null = empréstimo de pagamento único; 0=dom ... 6=sáb
   pular_feriados boolean not null default true,
+  juros_diario boolean not null default false,  -- true: juro soma por dia de cobrança até o total (prazo_dias = dias com juros, taxa_juros = juro total %)
+  taxa_dia numeric(6,2) check (taxa_dia is null or taxa_dia > 0),  -- juro diário: % ao dia sobre o valor, por prazo_dias dias de cobrança; taxa_juros = taxa_dia × prazo_dias (resultado)
+  valor_diario numeric(12,2) check (valor_diario is null or valor_diario > 0),  -- pagamento diário: parcela em R$ por dia de cobrança = (valor + taxa_juros% no total) ÷ prazo_dias (vezes); o que não for pago rola pro dia seguinte
+  parcelas_mensais boolean not null default false,  -- true: parcelado mensal (parcelas na tabela parcelas, juro do mês + juro opcional na parcela)
+  juros_parcela numeric(6,2) check (juros_parcela is null or juros_parcela >= 0),  -- sem uso no app (campo removido); pode ficar vazio
   created_at timestamptz not null default now()
 );
 
@@ -57,41 +60,44 @@ create table pagamentos (
 );
 
 -- ---- Row Level Security: cada usuário só acessa o que é dele ----
+-- (select auth.uid()) evita reavaliar a função a cada linha.
 alter table clientes enable row level security;
 alter table emprestimos enable row level security;
-alter table pagamentos enable row level security;
 alter table parcelas enable row level security;
+alter table pagamentos enable row level security;
 
-create policy "clientes select" on clientes for select using (auth.uid() = user_id);
-create policy "clientes insert" on clientes for insert with check (auth.uid() = user_id);
-create policy "clientes update" on clientes for update using (auth.uid() = user_id);
-create policy "clientes delete" on clientes for delete using (auth.uid() = user_id);
+create policy "clientes select" on clientes for select using ((select auth.uid()) = user_id);
+create policy "clientes insert" on clientes for insert with check ((select auth.uid()) = user_id);
+create policy "clientes update" on clientes for update using ((select auth.uid()) = user_id);
+create policy "clientes delete" on clientes for delete using ((select auth.uid()) = user_id);
 
-create policy "emprestimos select" on emprestimos for select using (auth.uid() = user_id);
-create policy "emprestimos insert" on emprestimos for insert with check (auth.uid() = user_id);
-create policy "emprestimos update" on emprestimos for update using (auth.uid() = user_id);
-create policy "emprestimos delete" on emprestimos for delete using (auth.uid() = user_id);
+create policy "emprestimos select" on emprestimos for select using ((select auth.uid()) = user_id);
+create policy "emprestimos insert" on emprestimos for insert with check ((select auth.uid()) = user_id);
+create policy "emprestimos update" on emprestimos for update using ((select auth.uid()) = user_id);
+create policy "emprestimos delete" on emprestimos for delete using ((select auth.uid()) = user_id);
 
-create policy "pagamentos select" on pagamentos for select using (auth.uid() = user_id);
-create policy "pagamentos insert" on pagamentos for insert with check (auth.uid() = user_id);
-create policy "pagamentos update" on pagamentos for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create policy "parcelas select" on parcelas for select using ((select auth.uid()) = user_id);
+create policy "parcelas insert" on parcelas for insert with check (
+  ((select auth.uid()) = user_id)
+  and exists (select 1 from emprestimos e where e.id = parcelas.emprestimo_id and e.user_id = (select auth.uid()))
+);
+create policy "parcelas update" on parcelas for update using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+create policy "parcelas delete" on parcelas for delete using ((select auth.uid()) = user_id);
+
+create policy "pagamentos select" on pagamentos for select using ((select auth.uid()) = user_id);
+create policy "pagamentos insert" on pagamentos for insert with check ((select auth.uid()) = user_id);
+create policy "pagamentos update" on pagamentos for update using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
 -- sem policy de delete em pagamentos: baixa errada é estornada, nunca apagada
 
-create policy "parcelas select" on parcelas for select using (auth.uid() = user_id);
-create policy "parcelas insert" on parcelas for insert with check (
-  auth.uid() = user_id
-  and exists (select 1 from emprestimos e where e.id = emprestimo_id and e.user_id = auth.uid())
-);
-create policy "parcelas update" on parcelas for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
-create policy "parcelas delete" on parcelas for delete using (auth.uid() = user_id);
-
--- índices
+-- ---- Índices ----
+create index idx_clientes_user on clientes(user_id);
 create index idx_emprestimos_cliente on emprestimos(cliente_id);
 create index idx_emprestimos_user on emprestimos(user_id);
-create index idx_pagamentos_emprestimo on pagamentos(emprestimo_id);
-create index idx_pagamentos_user on pagamentos(user_id);
-create index idx_clientes_user on clientes(user_id);
 create index idx_parcelas_emprestimo on parcelas(emprestimo_id);
 create index idx_parcelas_user_venc on parcelas(user_id, vencimento);
-create index idx_pagamentos_parcela on pagamentos(parcela_id);
 create index idx_pagamentos_data on pagamentos(user_id, data);
+create index idx_pagamentos_emprestimo on pagamentos(emprestimo_id);
+create index idx_pagamentos_estornado_por on pagamentos(estornado_por);
+create index idx_pagamentos_parcela on pagamentos(parcela_id);
+create index idx_pagamentos_registrado_por on pagamentos(registrado_por);
+create index idx_pagamentos_user on pagamentos(user_id);

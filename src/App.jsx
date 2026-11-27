@@ -79,7 +79,7 @@ function Avatar({ nome = "", claro = false }) {
   return (
     <span
       style={{ background: claro ? T.goldTint : T.navSoft, color: claro ? T.goldSoft : T.navAccent, fontFamily: FONT_DISPLAY }}
-      className="w-10 h-10 shrink-0 rounded-full flex items-center justify-center text-sm font-bold"
+      className="w-9 h-9 min-[360px]:w-10 min-[360px]:h-10 shrink-0 rounded-full flex items-center justify-center text-sm font-bold"
     >
       {iniciais}
     </span>
@@ -107,6 +107,15 @@ function addDias(iso, n) {
   const d = parseISO(iso);
   d.setDate(d.getDate() + n);
   return isoLocal(d);
+}
+// soma `n` meses mantendo o mesmo dia (31 → último dia do mês que não tem 31)
+function addMeses(iso, n) {
+  const d = parseISO(iso);
+  const dia = d.getDate();
+  const alvo = new Date(d.getFullYear(), d.getMonth() + n, 1);
+  const ultimo = new Date(alvo.getFullYear(), alvo.getMonth() + 1, 0).getDate();
+  alvo.setDate(Math.min(dia, ultimo));
+  return isoLocal(alvo);
 }
 function diasEntreISO(a, b) {
   return Math.round((parseISO(b) - parseISO(a)) / 86400000);
@@ -231,8 +240,170 @@ function calcularEmprestimoParcelado(l) {
   };
 }
 
+// parcelado mensal: juro simples (% ao mês × nº de meses) sobre o valor emprestado,
+// dividido em parcelas iguais. A última parcela absorve o arredondamento para a
+// soma bater certinho em centavos.
+function calcularParcelasMensais({ valor, taxaMensal, n, primeira }) {
+  const jurosMes = Math.round(valor * (taxaMensal || 0) * n) / 100;
+  const total = Math.round((valor + jurosMes) * 100) / 100;
+  const cada = Math.round((total / n) * 100) / 100;
+  const valores = Array.from({ length: n }, (_, i) => (i === n - 1 ? Math.round((total - cada * (n - 1)) * 100) / 100 : cada));
+  const datas = Array.from({ length: n }, (_, i) => addMeses(primeira, i));
+  return { jurosMes, total, cada, valores, datas };
+}
+
+// datas em que o juro diário soma: os próximos `n` dias de cobrança depois do empréstimo
+function datasJurosDiario(dataEmprestimo, dias, pularFeriados, n) {
+  if (!dataEmprestimo || !(n > 0) || !dias?.length) return [];
+  const ini = primeiraCobrancaApos(dataEmprestimo, dias, pularFeriados);
+  return gerarDatasCobranca(ini, n, dias, pularFeriados).datas;
+}
+
+// empréstimo de juros diário: o juro total combinado (taxa × valor) é dividido
+// em partes iguais pelos dias de cobrança; a cada dia de cobrança que passa soma
+// uma parte, até chegar no total. O cliente paga quando e quanto puder.
+function calcularEmprestimoJurosDiario(l) {
+  const hoje = hojeISO();
+  // em centavos pra não acumular erro de arredondamento
+  const totalC = Math.round(l.valor * (l.taxaJuros || 0));
+  const diaC = l.taxaDia > 0 ? Math.round(l.valor * l.taxaDia) : 0;
+  // modelo novo: % por dia × quantidade de dias de cobrança (prazoDias); o juro total é o resultado.
+  // modelo antigo (sem taxa por dia): o juro total é dividido igualmente em `prazoDias` dias.
+  const nDias = l.prazoDias;
+  const datas = datasJurosDiario(l.dataEmprestimo, l.diasCobranca, l.pularFeriados, nDias);
+  const n = datas.length || 1;
+  const jurosTotal = totalC / 100;
+  const jurosAte = (ate) => {
+    const c = datas.filter((d) => d <= ate).length;
+    if (c >= n) return jurosTotal;
+    return diaC > 0 ? Math.min(totalC, c * diaC) / 100 : Math.round((totalC * c) / n) / 100;
+  };
+
+  // o juro para de somar no dia em que o empréstimo foi quitado
+  const pagamentos = [...(l.pagamentos || [])].sort((a, b) => (a.data < b.data ? -1 : a.data > b.data ? 1 : 0));
+  let acumulado = 0;
+  let quitadoEm = null;
+  for (const p of pagamentos) {
+    acumulado += p.valor;
+    if (acumulado >= l.valor + jurosAte(p.data) - 0.01) {
+      quitadoEm = p.data;
+      break;
+    }
+  }
+
+  const ate = quitadoEm || hoje;
+  const juros = jurosAte(ate);
+  const totalDevido = l.valor + juros;
+  const totalPago = pagamentos.reduce((s, p) => s + p.valor, 0);
+  const saldo = Math.max(0, totalDevido - totalPago);
+  const status = saldo <= 0.01 ? "positivo" : "negativo";
+
+  const vencimentoISO = datas.length ? datas[datas.length - 1] : addDias(l.dataEmprestimo, l.prazoDias || 30);
+  const diasAtraso = diasEntreISO(vencimentoISO, hoje);
+  const atrasado = status === "negativo" && diasAtraso > 0;
+
+  return {
+    diario: true,
+    periodos: 1,
+    prazoDias: l.prazoDias,
+    juros,
+    jurosTotal,
+    jurosDia: diaC > 0 ? diaC / 100 : jurosTotal / n,
+    taxaDia: l.taxaDia > 0 ? l.taxaDia : null,
+    diasContados: datas.filter((d) => d <= ate).length,
+    diasTotal: n,
+    totalDevido,
+    totalPago,
+    saldo,
+    status,
+    vencimento: parseISO(vencimentoISO),
+    diasAtraso,
+    atrasado,
+    quitadoEm,
+  };
+}
+
+// ---- pagamento diário (como a tabela de cobrança): o juro é fixo no total (ex.: 20%),
+// o cliente paga uma parcela igual por dia de cobrança, e o que não pagou num dia soma
+// na cobrança do dia seguinte (rolagem automática, sem parcelas separadas).
+const arred2 = (x) => Math.round(x * 100) / 100;
+
+// valor do empréstimo + juro total ÷ vezes = parcela por dia (a última absorve os centavos)
+function parcelaDiaria(valor, jurosTotalPct, vezes) {
+  const total = arred2(valor * (1 + (jurosTotalPct || 0) / 100));
+  const parcela = arred2(total / vezes);
+  return { total, parcela, ultima: arred2(total - parcela * (vezes - 1)) };
+}
+
+function calcularEmprestimoPagamentoDiario(l) {
+  const hoje = hojeISO();
+  const n = Math.max(1, l.prazoDias || 1);
+  const plano = datasJurosDiario(l.dataEmprestimo, l.diasCobranca, l.pularFeriados, n);
+  const ultima = plano.length ? plano[plano.length - 1] : addDias(l.dataEmprestimo, n);
+  const total = arred2(l.valor * (1 + (l.taxaJuros || 0) / 100));
+  const vd = l.valorDiario || 0;
+  const pagamentos = [...(l.pagamentos || [])].sort((a, b) => (a.data < b.data ? -1 : a.data > b.data ? 1 : 0));
+
+  const totalPago = pagamentos.reduce((s, p) => s + p.valor, 0);
+  let acumulado = 0;
+  let quitadoEm = null;
+  for (const p of pagamentos) {
+    acumulado += p.valor;
+    if (acumulado >= total - 0.01) { quitadoEm = p.data; break; }
+  }
+  const saldo = arred2(Math.max(0, total - totalPago));
+  const status = saldo <= 0.01 ? "positivo" : "negativo";
+
+  const kAntes = plano.filter((x) => x < hoje).length;
+  const kAte = plano.filter((x) => x <= hoje).length;
+  // cobrar até a data: parcela × dias previstos que já chegaram, menos o que já pagou
+  // (no último dia previsto e depois, cobra tudo que falta)
+  const cobrarEm = (data) => {
+    if (status === "positivo") return 0;
+    const k = plano.filter((x) => x <= data).length;
+    return data >= ultima ? saldo : arred2(Math.min(saldo, Math.max(0, vd * k - totalPago)));
+  };
+  const cobrarHoje = cobrarEm(hoje);
+  const proxima = plano.find((x) => x >= hoje) || null;
+
+  const atrasado = status === "negativo" && (totalPago < vd * kAntes - 0.01 || hoje > ultima);
+  let diasAtraso = 0;
+  let desdeAtraso = ultima;
+  if (atrasado) {
+    const iFalta = plano.findIndex((x, i) => x < hoje && vd * (i + 1) - totalPago > 0.01);
+    if (iFalta >= 0) { desdeAtraso = plano[iFalta]; diasAtraso = diasEntreISO(plano[iFalta], hoje); }
+    if (hoje > ultima && diasEntreISO(ultima, hoje) >= diasAtraso) { desdeAtraso = ultima; diasAtraso = diasEntreISO(ultima, hoje); }
+  }
+
+  return {
+    pagamentoDiario: true,
+    periodos: 1,
+    prazoDias: n,
+    juros: arred2(total - l.valor),
+    valorDiario: vd,
+    diasPrevistos: n,
+    diaAtual: kAte,
+    ultimaData: ultima,
+    cobrarHoje,
+    ehDiaDeCobranca: plano.includes(hoje),
+    proximaCobranca: proxima,
+    valorProxima: proxima ? cobrarEm(proxima) : cobrarHoje,
+    totalDevido: total,
+    totalPago,
+    saldo,
+    status,
+    vencimento: parseISO(ultima),
+    diasAtraso,
+    desdeAtraso,
+    atrasado,
+    quitadoEm,
+  };
+}
+
 function calcularEmprestimo(l) {
+  if (l.pagamentoDiario) return calcularEmprestimoPagamentoDiario(l);
   if (l.parcelado) return calcularEmprestimoParcelado(l);
+  if (l.jurosDiario) return calcularEmprestimoJurosDiario(l);
   const hoje = hojeISO();
   const prazoDias = l.prazoDias || 30;
   const taxa = (l.taxaJuros || 0) / 100;
@@ -284,19 +455,24 @@ function calcularCliente(cliente) {
 }
 
 const DIAS_SEG_SAB = [1, 2, 3, 4, 5, 6];
+const DIAS_SEG_SEX = [1, 2, 3, 4, 5];
+// juro total (%) do juro diário: % ao dia × dias de cobrança, com 2 casas (como o banco guarda)
+const jurosTotalDiario = (taxaDia, n) => Math.round(taxaDia * n * 100) / 100;
 
 function novoEmprestimoForm() {
   const hoje = hojeISO();
   return {
-    tipo: "parcelado", // parcelado | unico
+    tipo: "diario", // diario | unico (parcelado só existe em empréstimos antigos)
     valor: "",
     taxaJuros: "30",
     prazoDias: "30",
     dataEmprestimo: hoje,
     garantia: "",
     valorParcela: "",
-    qtdParcelas: "30",
-    diasCobranca: DIAS_SEG_SAB,
+    taxaDia: "", // juro diário: % por dia de cobrança
+    primeiraParcela: "", // parcelado mensal: vazio = 1 mês depois do empréstimo
+    qtdParcelas: "30", // no juro diário: quantos dias de cobrança somam juro
+    diasCobranca: DIAS_SEG_SEX,
     pularFeriados: true,
     primeiraCobranca: "",
     primeiraManual: false, // se false, a 1ª cobrança é o próximo dia de cobrança depois do empréstimo
@@ -340,6 +516,23 @@ function validarEmprestimo(f, editando) {
       if (!(n > 0 && n <= 400)) falta.push("quantidade de parcelas (1 a 400)");
       else if (f.diasCobranca?.length && datasDoForm(f).datas.length !== n) falta.push("datas das parcelas");
     }
+  } else if (f.tipo === "pagdiario") {
+    const n = parseInt(f.qtdParcelas || "0", 10);
+    if (!(parseFloat(f.taxaJuros) >= 0)) falta.push("juros total");
+    if (!(n > 0 && n <= 400)) falta.push("quantas vezes (1 a 400)");
+    if (!f.diasCobranca?.length) falta.push("dias de cobrança");
+    else if (n > 0 && n <= 400 && datasJurosDiario(f.dataEmprestimo, f.diasCobranca, f.pularFeriados, n).length !== n) falta.push("dias de cobrança");
+  } else if (f.tipo === "mensal") {
+    const n = parseInt(f.qtdParcelas || "0", 10);
+    if (!(parseFloat(f.taxaJuros) >= 0)) falta.push("juros ao mês");
+    if (!editando && !(n > 0 && n <= 120)) falta.push("quantidade de parcelas (1 a 120)");
+  } else if (f.tipo === "diario") {
+    const taxaDia = parseFloat(f.taxaDia);
+    const n = parseInt(f.qtdParcelas || "0", 10);
+    if (!(taxaDia > 0)) falta.push("juros por dia");
+    if (!(n > 0 && n <= 400)) falta.push("quantos dias (1 a 400)");
+    if (!f.diasCobranca?.length) falta.push("dias que contam juro");
+    else if (taxaDia > 0 && n > 0 && n <= 400 && datasJurosDiario(f.dataEmprestimo, f.diasCobranca, f.pularFeriados, n).length !== n) falta.push("dias que contam juro");
   } else {
     if (!(parseFloat(f.taxaJuros) >= 0)) falta.push("juros");
     if (!(parseInt(f.prazoDias || "0", 10) > 0)) falta.push("prazo");
@@ -347,13 +540,15 @@ function validarEmprestimo(f, editando) {
   return falta;
 }
 
-const novoClienteForm = () => ({ nome: "", telefone: "", observacoes: "", ...novoEmprestimoForm() });
+const novoClienteForm = () => ({ nome: "", telefone: "", cpf: "", endereco: "", observacoes: "", ...novoEmprestimoForm() });
 
 function fromRow(row, parcelasPorEmprestimo = {}) {
   return {
     id: row.id,
     nome: row.nome,
     telefone: row.telefone || "",
+    cpf: formatCpf(row.cpf),
+    endereco: row.endereco || "",
     observacoes: row.observacoes || "",
     emprestimos: (row.emprestimos || [])
       .map((l) => ({
@@ -363,7 +558,12 @@ function fromRow(row, parcelasPorEmprestimo = {}) {
         prazoDias: l.prazo_dias,
         dataEmprestimo: l.data_emprestimo,
         garantia: l.garantia || "",
-        parcelado: Array.isArray(l.dias_cobranca),
+        jurosDiario: l.juros_diario === true,
+        parcelasMensais: l.parcelas_mensais === true,
+        taxaDia: l.taxa_dia == null ? 0 : Number(l.taxa_dia),
+        pagamentoDiario: l.valor_diario != null,
+        valorDiario: l.valor_diario == null ? 0 : Number(l.valor_diario),
+        parcelado: (Array.isArray(l.dias_cobranca) && l.juros_diario !== true && l.valor_diario == null) || l.parcelas_mensais === true,
         diasCobranca: l.dias_cobranca || [],
         pularFeriados: l.pular_feriados !== false,
         parcelas: (parcelasPorEmprestimo[l.id] || [])
@@ -620,6 +820,65 @@ function AppInner() {
   const user = session?.user || null;
   const userId = user?.id || null;
 
+  // assinatura: teste grátis / ativa / liberada. Falha ao ler = não trava a tela
+  // (o bloqueio de verdade é feito pelo banco)
+  const [assinatura, setAssinatura] = useState(null);
+  const [assinando, setAssinando] = useState(false);
+  const [erroAssinatura, setErroAssinatura] = useState("");
+  const carregarAssinatura = useCallback(async () => {
+    if (!userId) { setAssinatura(null); return; }
+    const { data, error: errA } = await supabase.from("assinaturas").select("status, teste_ate, asaas_customer_id, asaas_subscription_id").eq("user_id", userId).maybeSingle();
+    if (!errA) setAssinatura(data || null);
+  }, [userId]);
+  const assinaturaRef = useRef(null);
+  useEffect(() => { assinaturaRef.current = assinatura; }, [assinatura]);
+  const [msgPagamento, setMsgPagamento] = useState("");
+  // pergunta ao servidor (que pergunta ao Asaas) se já foi pago; depois relê a assinatura
+  const atualizarAssinatura = useCallback(async () => {
+    try {
+      const a = assinaturaRef.current;
+      if (a?.asaas_subscription_id && a.status !== "liberada") {
+        const { data } = await supabase.auth.getSession();
+        const r = await fetch("/api/verificar-pagamento", { method: "POST", headers: { Authorization: `Bearer ${data.session?.access_token || ""}` } });
+        const j = await r.json().catch(() => null);
+        if (r.ok && j?.mudou && j.status === "ativa") {
+          setMsgPagamento("Pagamento confirmado! Sua assinatura está ativa. Obrigado!");
+          setTimeout(() => setMsgPagamento(""), 8000);
+        }
+      }
+    } catch {
+      // sem internet ou sem o servidor: só relê o que já está no banco
+    }
+    await carregarAssinatura();
+  }, [carregarAssinatura]);
+  useEffect(() => {
+    carregarAssinatura();
+    // ao voltar da página de pagamento, confere sozinho se já foi pago
+    const aoVoltar = () => { if (document.visibilityState === "visible") atualizarAssinatura(); };
+    document.addEventListener("visibilitychange", aoVoltar);
+    return () => document.removeEventListener("visibilitychange", aoVoltar);
+  }, [carregarAssinatura, atualizarAssinatura]);
+  const acesso = avaliarAssinatura(assinatura);
+  const [pedirDoc, setPedirDoc] = useState(false);
+  const executarAssinatura = async (cpfCnpj) => {
+    setAssinando(true);
+    setErroAssinatura("");
+    try {
+      await iniciarAssinatura(cpfCnpj);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error("AGIOPAY — erro ao abrir o pagamento:", e);
+      setErroAssinatura(e.amigavel ? e.message : "O pagamento ainda não está disponível. Tente de novo mais tarde.");
+    }
+    setAssinando(false);
+  };
+  // quem ainda não tem cadastro no Asaas precisa informar CPF ou CNPJ (o Asaas exige pra cobrar)
+  const assinar = () => {
+    setErroAssinatura("");
+    if (assinatura?.asaas_customer_id) executarAssinatura("");
+    else setPedirDoc(true);
+  };
+
   const salvarPreset = async (taxaJuros, prazoDias) => {
     const jaExiste = taxaPresets.some((p) => p.taxaJuros === taxaJuros && p.prazoDias === prazoDias);
     if (jaExiste) return;
@@ -823,6 +1082,70 @@ function AppInner() {
   // devolve true se deu certo
   const inserirEmprestimo = async (clienteId, data) => {
     const valor = parseFloat(data.valor);
+    if (data.tipo === "pagdiario") {
+      const n = parseInt(data.qtdParcelas, 10);
+      const { parcela } = parcelaDiaria(valor, parseFloat(data.taxaJuros), n);
+      const { error: err } = await supabase.from("emprestimos").insert({
+        user_id: user.id,
+        cliente_id: clienteId,
+        valor,
+        taxa_juros: parseFloat(data.taxaJuros),
+        prazo_dias: n,
+        data_emprestimo: data.dataEmprestimo,
+        garantia: data.garantia || null,
+        dias_cobranca: data.diasCobranca,
+        pular_feriados: data.pularFeriados,
+        valor_diario: parcela,
+      });
+      if (err) { flashError("salvar o empréstimo", err); return false; }
+      return true;
+    }
+    if (data.tipo === "mensal") {
+      const n = parseInt(data.qtdParcelas || "0", 10);
+      const primeira = data.primeiraParcela || addMeses(data.dataEmprestimo, 1);
+      const c = calcularParcelasMensais({ valor, taxaMensal: parseFloat(data.taxaJuros), n, primeira });
+      const { data: emp, error: err } = await supabase
+        .from("emprestimos")
+        .insert({
+          user_id: user.id,
+          cliente_id: clienteId,
+          valor,
+          taxa_juros: parseFloat(data.taxaJuros),
+          prazo_dias: Math.max(1, diasEntreISO(data.dataEmprestimo, c.datas[c.datas.length - 1])),
+          data_emprestimo: data.dataEmprestimo,
+          garantia: data.garantia || null,
+          parcelas_mensais: true,
+        })
+        .select()
+        .single();
+      if (err) { flashError("salvar o empréstimo", err); return false; }
+      const { error: errP } = await supabase.from("parcelas").insert(
+        c.datas.map((d, i) => ({ user_id: user.id, emprestimo_id: emp.id, vencimento: d, valor: c.valores[i] }))
+      );
+      if (errP) {
+        await supabase.from("emprestimos").delete().eq("id", emp.id);
+        flashError("gerar as parcelas", errP);
+        return false;
+      }
+      return true;
+    }
+    if (data.tipo === "diario") {
+      const { error: err } = await supabase.from("emprestimos").insert({
+        user_id: user.id,
+        cliente_id: clienteId,
+        valor,
+        taxa_juros: jurosTotalDiario(parseFloat(data.taxaDia), parseInt(data.qtdParcelas, 10)),
+        taxa_dia: parseFloat(data.taxaDia),
+        prazo_dias: parseInt(data.qtdParcelas, 10),
+        data_emprestimo: data.dataEmprestimo,
+        garantia: data.garantia || null,
+        dias_cobranca: data.diasCobranca,
+        pular_feriados: data.pularFeriados,
+        juros_diario: true,
+      });
+      if (err) { flashError("salvar o empréstimo", err); return false; }
+      return true;
+    }
     if (data.tipo !== "parcelado") {
       const { error: err } = await supabase.from("emprestimos").insert({
         user_id: user.id,
@@ -878,7 +1201,7 @@ function AppInner() {
   const addClientWithLoan = async (data) => {
     const { data: cliente, error: err1 } = await supabase
       .from("clientes")
-      .insert({ user_id: user.id, nome: data.nome, telefone: data.telefone || null, observacoes: data.observacoes || null })
+      .insert({ user_id: user.id, nome: data.nome, telefone: data.telefone || null, cpf: cpfDigits(data.cpf) || null, endereco: data.endereco?.trim() || null, observacoes: data.observacoes || null })
       .select()
       .single();
     if (err1) return flashError("salvar o cliente", err1);
@@ -901,6 +1224,21 @@ function AppInner() {
     };
     if (data.tipo === "parcelado") {
       // nos parcelados, datas e valores das parcelas são editados parcela por parcela
+      update.dias_cobranca = data.diasCobranca;
+      update.pular_feriados = data.pularFeriados;
+    } else if (data.tipo === "mensal") {
+      // parcelas já foram geradas: valor e data de cada uma se editam parcela por parcela
+    } else if (data.tipo === "pagdiario") {
+      const n = parseInt(data.qtdParcelas, 10);
+      update.taxa_juros = parseFloat(data.taxaJuros);
+      update.prazo_dias = n;
+      update.valor_diario = parcelaDiaria(parseFloat(data.valor), parseFloat(data.taxaJuros), n).parcela;
+      update.dias_cobranca = data.diasCobranca;
+      update.pular_feriados = data.pularFeriados;
+    } else if (data.tipo === "diario") {
+      update.taxa_juros = jurosTotalDiario(parseFloat(data.taxaDia), parseInt(data.qtdParcelas, 10));
+      update.taxa_dia = parseFloat(data.taxaDia);
+      update.prazo_dias = parseInt(data.qtdParcelas, 10);
       update.dias_cobranca = data.diasCobranca;
       update.pular_feriados = data.pularFeriados;
     } else {
@@ -966,7 +1304,7 @@ function AppInner() {
   const editClient = async (id, data) => {
     const { error: err } = await supabase
       .from("clientes")
-      .update({ nome: data.nome, telefone: data.telefone || null, observacoes: data.observacoes || null })
+      .update({ nome: data.nome, telefone: data.telefone || null, cpf: cpfDigits(data.cpf) || null, endereco: data.endereco?.trim() || null, observacoes: data.observacoes || null })
       .eq("id", id);
     if (err) return flashError("editar o cliente", err);
     loadClients();
@@ -1107,7 +1445,9 @@ function AppInner() {
     const itens = [];
     enriched.forEach((c) => {
       c.calc.abertos.forEach((l) => {
-        itens.push({ clienteNome: c.nome, clienteId: c.id, loanId: l.id, vencimento: l.calc.vencimento, saldo: l.calc.saldo, atrasado: l.calc.atrasado, diasAtraso: l.calc.diasAtraso });
+        const pd = l.calc.pagamentoDiario;
+        const venc = pd ? parseISO(l.calc.atrasado ? l.calc.desdeAtraso : l.calc.proximaCobranca || l.calc.ultimaData) : l.calc.vencimento;
+        itens.push({ clienteNome: c.nome, clienteId: c.id, loanId: l.id, vencimento: venc, saldo: pd ? (l.calc.atrasado ? l.calc.cobrarHoje : l.calc.valorProxima) : l.calc.saldo, atrasado: l.calc.atrasado, diasAtraso: l.calc.diasAtraso });
       });
     });
     return itens.sort((a, b) => a.vencimento - b.vencimento);
@@ -1146,6 +1486,18 @@ function AppInner() {
               valor: l.calc.atrasadas.reduce((s, p) => s + p.restante, 0),
               desde: l.calc.atrasadas[0].vencimento,
             });
+          }
+        } else if (l.calc.pagamentoDiario) {
+          const cd = l.calc;
+          const previsto = cd.cobrarHoje + pagoHoje;
+          if (cd.ehDiaDeCobranca && (previsto > 0.01 || pagoHoje > 0)) {
+            itens.push({
+              key: l.id, cliente: c, loan: l, parcela: null,
+              rotulo: cd.diaAtual >= cd.diasPrevistos ? "último dia: quitar" : `diária ${cd.diaAtual}/${cd.diasPrevistos}`,
+              previsto, recebido: pagoHoje,
+            });
+          } else if (cd.atrasado) {
+            atrasados.push({ key: l.id, cliente: c, loan: l, qtd: null, valor: cd.cobrarHoje, desde: cd.desdeAtraso });
           }
         } else {
           if (isoLocal(l.calc.vencimento) === hoje && (l.calc.saldo > 0.01 || pagoHoje > 0)) {
@@ -1343,7 +1695,7 @@ function AppInner() {
   }
 
   if (!user) {
-    return <AuthScreen />;
+    return <AuthScreen permitirEsqueci permitirCadastro />;
   }
 
   if (recoveryMode) {
@@ -1362,6 +1714,23 @@ function AppInner() {
     );
   }
 
+  if (acesso.conhecida && !acesso.liberado) {
+    return (
+      <PaywallScreen
+        info={acesso}
+        email={user.email}
+        onAssinar={assinar}
+        busy={assinando}
+        erro={erroAssinatura}
+        onAtualizar={atualizarAssinatura}
+        onBackup={baixarBackup}
+        backupBusy={backupBusy}
+        onSair={() => supabase.auth.signOut()}
+        docModal={pedirDoc && <PedirDocumento busy={assinando} onCancelar={() => setPedirDoc(false)} onConfirmar={(d) => { setPedirDoc(false); executarAssinatura(d); }} />}
+      />
+    );
+  }
+
   if (printMode) {
     return <PrintReport mode={printMode} allClients={enriched} userNome={nomeUsuario} onClose={() => setPrintMode(null)} />;
   }
@@ -1374,7 +1743,7 @@ function AppInner() {
   const irPara = (key) => { setView(key); setSelectedId(null); setShowNotif(false); window.scrollTo({ top: 0 }); };
   const sino = (
     <div className="relative">
-      <button onClick={() => setShowNotif((s) => !s)} title="Notificações" aria-label="Notificações" style={{ ...CARD, color: T.textInk }} className="flex items-center justify-center rounded-full w-10 h-10 active:scale-95 transition-transform relative">
+      <button onClick={() => setShowNotif((s) => !s)} title="Notificações" aria-label="Notificações" style={{ ...CARD, color: T.textInk }} className="flex items-center justify-center rounded-full w-9 h-9 min-[360px]:w-10 min-[360px]:h-10 active:scale-95 transition-transform relative">
         <Bell size={17} />
         {notifItens.length > 0 && (
           <span style={{ background: T.red, color: T.onColor, boxShadow: `0 0 0 2px ${T.ink}` }} className="absolute -top-1 -right-1 min-w-[18px] h-[18px] rounded-full text-[10px] font-semibold flex items-center justify-center px-1">
@@ -1451,22 +1820,22 @@ function AppInner() {
       <div className="lg:pl-64">
         {/* ---- topo ---- */}
         <header style={{ background: T.ink, borderBottom: `1px solid ${T.line}`, paddingTop: "env(safe-area-inset-top)" }} className="sticky top-0 z-40">
-          <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-3">
+          <div className="max-w-6xl mx-auto px-3 min-[360px]:px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-2 min-[360px]:gap-3">
             <div className="lg:hidden"><Logo /></div>
             <div className="hidden lg:block min-w-0">
               <h1 style={{ fontFamily: FONT_DISPLAY, color: T.textInk }} className="text-xl font-bold tracking-tight truncate">{tituloTela}</h1>
               <p style={{ color: T.muted }} className="text-xs first-letter:uppercase">{new Date().toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "long" })}</p>
             </div>
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex items-center gap-1.5 min-[360px]:gap-2 shrink-0">
               {sino}
-              <button onClick={() => setShowAdd(true)} title="Novo cliente" aria-label="Novo cliente" style={{ background: T.gold, color: T.onColor }} className="lg:hidden flex items-center justify-center gap-1.5 rounded-full h-10 w-10 sm:w-auto sm:px-4 text-sm font-semibold active:scale-95 transition-transform">
+              <button onClick={() => setShowAdd(true)} title="Novo cliente" aria-label="Novo cliente" style={{ background: T.gold, color: T.onColor }} className="lg:hidden flex items-center justify-center gap-1.5 rounded-full h-9 w-9 min-[360px]:h-10 min-[360px]:w-10 sm:w-auto sm:px-4 text-sm font-semibold active:scale-95 transition-transform">
                 <Plus size={17} strokeWidth={2.5} />
                 <span className="hidden sm:inline">Cliente</span>
               </button>
               <button onClick={() => setShowAccount(true)} title="Minha conta" aria-label="Minha conta" className="lg:hidden rounded-full active:scale-95 transition-transform">
                 <Avatar nome={nomeUsuario || user.email} claro />
               </button>
-              <button onClick={() => sair()} title="Sair" aria-label="Sair" style={{ ...CARD, color: T.muted }} className="lg:hidden flex items-center justify-center rounded-full w-10 h-10 active:scale-95 transition-transform">
+              <button onClick={() => sair()} title="Sair" aria-label="Sair" style={{ ...CARD, color: T.muted }} className="lg:hidden flex items-center justify-center rounded-full w-9 h-9 min-[360px]:w-10 min-[360px]:h-10 active:scale-95 transition-transform">
                 <LogOut size={16} />
               </button>
             </div>
@@ -1474,6 +1843,9 @@ function AppInner() {
         </header>
 
         <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 pt-5 sm:pt-6 lg:pt-8 pb-28 lg:pb-12">
+        {msgPagamento && <div style={{ background: T.goldTint, color: T.textPaper, border: "1px solid #BFE3DE" }} className="rounded-xl px-4 py-3 text-sm mb-4">{msgPagamento}</div>}
+        {acesso.emTeste && <AvisoTeste info={acesso} onAssinar={assinar} busy={assinando} onAtualizar={assinatura?.asaas_subscription_id ? atualizarAssinatura : null} />}
+        {erroAssinatura && <p style={{ color: T.red }} className="text-xs mb-3">{erroAssinatura}</p>}
         <StatusConexao online={online} pendentes={fila.length} sincronizando={sincronizando} copiaDe={copiaDe} onEnviar={async () => { if (await sincronizar()) loadClients(); }} />
 
         {faltaMigracao.length > 0 && (
@@ -1585,7 +1957,7 @@ function AppInner() {
                       onChange={(e) => { if (e.target.files?.[0]) importarCSV(e.target.files[0]); e.target.value = ""; }}
                     />
                   </label>
-                  <button onClick={baixarModeloCSV} className="text-xs underline" style={{ color: T.goldSoft }}>
+                  <button onClick={baixarModeloCSV} className="text-xs underline py-2.5" style={{ color: T.goldSoft }}>
                     baixar modelo
                   </button>
                 </div>
@@ -1651,6 +2023,8 @@ function AppInner() {
 
       {showAdd && <ClientLoanForm title="Novo cliente" initial={novoClienteForm()} onClose={() => setShowAdd(false)} onSave={addClientWithLoan} presets={taxaPresets} onSavePreset={salvarPreset} onRemovePreset={removerPreset} />}
 
+      {pedirDoc && <PedirDocumento busy={assinando} onCancelar={() => setPedirDoc(false)} onConfirmar={(d) => { setPedirDoc(false); executarAssinatura(d); }} />}
+
       {showAccount && (
         <AccountModal
           user={user}
@@ -1662,6 +2036,9 @@ function AppInner() {
           onRestaurarBackup={restaurarBackup}
           onClose={() => setShowAccount(false)}
           onUpdated={(novoNome) => setNomeUsuario(novoNome)}
+          assinaturaInfo={acesso}
+          onAssinar={assinar}
+          assinando={assinando}
         />
       )}
 
@@ -1681,6 +2058,379 @@ function AppInner() {
           {error}
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------- TABELA DE COBRANÇA (valor × vezes × parcela) ----------------
+const TABELA_KEY = "agiopay:tabela-cobranca";
+function lerTabelaSalva() {
+  try {
+    return JSON.parse(localStorage.getItem(TABELA_KEY) || "null");
+  } catch {
+    return null;
+  }
+}
+const fmtValorTabela = (n) => "R$ " + n.toLocaleString("pt-BR", { minimumFractionDigits: Number.isInteger(n) ? 0 : 2, maximumFractionDigits: 2 });
+
+function linhasDaTabela({ de, ate, passo, vezes, juros }) {
+  const out = [];
+  if (!(de > 0) || !(ate >= de) || !(passo > 0) || !(vezes > 0) || !(juros >= 0)) return out;
+  for (let v = de; v <= ate + 0.001 && out.length < 60; v += passo) {
+    out.push({ valor: Math.round(v * 100) / 100, parcela: parcelaDiaria(v, juros, vezes).parcela });
+  }
+  return out;
+}
+
+// desenha a tabela como imagem (pra mandar pro cliente)
+function tabelaParaImagem(linhas, vezes) {
+  const W = 520, pad = 40, headH = 62, rowH = 60, dpr = 2;
+  const H = pad * 2 + headH + rowH * linhas.length;
+  const c = document.createElement("canvas");
+  c.width = W * dpr;
+  c.height = H * dpr;
+  const g = c.getContext("2d");
+  g.scale(dpr, dpr);
+  g.fillStyle = "#F3EFE7";
+  g.fillRect(0, 0, W, H);
+  const x = pad, y = pad, w = W - pad * 2, h = headH + rowH * linhas.length;
+  const caminho = () => { g.beginPath(); g.roundRect(x, y, w, h, 18); };
+  caminho();
+  g.fillStyle = "#FFFFFF";
+  g.fill();
+  g.save();
+  caminho();
+  g.clip();
+  g.fillStyle = "#12263A";
+  g.fillRect(x, y, w, headH);
+  const cols = [0.34, 0.28, 0.38];
+  const centros = [];
+  let ac = x;
+  cols.forEach((f) => { centros.push(ac + (w * f) / 2); ac += w * f; });
+  g.textAlign = "center";
+  g.textBaseline = "middle";
+  g.font = "bold 20px Arial, sans-serif";
+  g.fillStyle = "#F2C14E";
+  ["VALOR", "VEZES", "PARCELA"].forEach((t, i) => g.fillText(t, centros[i], y + headH / 2));
+  linhas.forEach((l, i) => {
+    const ry = y + headH + rowH * i;
+    g.strokeStyle = "#E4E4E4";
+    g.lineWidth = 1;
+    g.beginPath();
+    g.moveTo(x, ry);
+    g.lineTo(x + w, ry);
+    g.stroke();
+    g.fillStyle = "#12263A";
+    g.fillText(fmtValorTabela(l.valor), centros[0], ry + rowH / 2);
+    g.fillText(`${vezes}x`, centros[1], ry + rowH / 2);
+    g.fillText(fmt(l.parcela), centros[2], ry + rowH / 2);
+  });
+  g.restore();
+  caminho();
+  g.strokeStyle = "#C9A227";
+  g.lineWidth = 3;
+  g.stroke();
+  return c;
+}
+
+function TabelaCobranca({ vezesInicial, jurosInicial, onClose }) {
+  const salva = useMemo(() => lerTabelaSalva(), []);
+  const [vezes, setVezes] = useState(String(vezesInicial || salva?.vezes || 20));
+  const [juros, setJuros] = useState(String(jurosInicial !== undefined && jurosInicial !== "" ? jurosInicial : salva?.juros ?? 20));
+  const [de, setDe] = useState(String(salva?.de ?? 200));
+  const [ate, setAte] = useState(String(salva?.ate ?? 1000));
+  const [passo, setPasso] = useState(String(salva?.passo ?? 100));
+  const [msg, setMsg] = useState("");
+
+  const v = parseInt(vezes || "0", 10);
+  const j = parseFloat(juros);
+  const linhas = useMemo(() => linhasDaTabela({ de: parseFloat(de), ate: parseFloat(ate), passo: parseFloat(passo), vezes: v, juros: j }), [de, ate, passo, v, j]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(TABELA_KEY, JSON.stringify({ vezes: v || 20, juros: j >= 0 ? j : 20, de, ate, passo }));
+    } catch {
+      // sem armazenamento no aparelho: a tabela só não lembra os valores
+    }
+  }, [v, j, de, ate, passo]);
+
+  const aviso = (t) => { setMsg(t); setTimeout(() => setMsg(""), 2500); };
+
+  const copiar = async () => {
+    const texto = ["Tabela de cobrança diária", ...linhas.map((l) => `${fmtValorTabela(l.valor)} em ${v}x de ${fmt(l.parcela)}`)].join("\n");
+    try {
+      await navigator.clipboard.writeText(texto);
+      aviso("Texto copiado ✓");
+    } catch {
+      aviso("Não deu para copiar neste aparelho.");
+    }
+  };
+
+  const baixarImagem = async () => {
+    const blob = await new Promise((r) => tabelaParaImagem(linhas, v).toBlob(r, "image/png"));
+    if (!blob) return aviso("Não deu para gerar a imagem.");
+    const arquivo = new File([blob], "tabela-de-cobranca.png", { type: "image/png" });
+    if (navigator.canShare?.({ files: [arquivo] })) {
+      try {
+        await navigator.share({ files: [arquivo], title: "Tabela de cobrança" });
+        return;
+      } catch (err) {
+        if (err?.name === "AbortError") return;
+      }
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "tabela-de-cobranca.png";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    aviso("Imagem baixada ✓");
+  };
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center">
+      <div onClick={onClose} className="absolute inset-0" style={{ background: "rgba(0,0,0,0.55)" }} />
+      <div style={{ background: T.paper }} className="relative w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-5 max-h-[90dvh] overflow-y-auto">
+        <div className="flex items-center justify-between mb-4">
+          <h2 style={{ color: T.textPaper, fontFamily: "'Fraunces', serif" }} className="text-xl font-semibold">Tabela de cobrança</h2>
+          <button onClick={onClose} aria-label="Fechar" className="p-2 -m-2"><X size={20} style={{ color: T.muted }} /></button>
+        </div>
+
+        <div className="grid grid-cols-2 gap-x-3">
+          <Field label="Quantas vezes (dias)">
+            <IntegerField value={vezes} onChange={setVezes} placeholder="20" />
+          </Field>
+          <Field label="Juros total %">
+            <DecimalField value={juros} onChange={setJuros} placeholder="20" />
+          </Field>
+          <Field label="Valor inicial (R$)">
+            <DecimalField value={de} onChange={setDe} placeholder="200" />
+          </Field>
+          <Field label="Valor final (R$)">
+            <DecimalField value={ate} onChange={setAte} placeholder="1000" />
+          </Field>
+        </div>
+        <Field label="De quanto em quanto (R$)">
+          <DecimalField value={passo} onChange={setPasso} placeholder="100" />
+        </Field>
+
+        {linhas.length === 0 ? (
+          <p style={{ color: T.muted }} className="text-xs mb-3">Preencha as vezes, o juro e os valores para ver a tabela.</p>
+        ) : (
+          <div style={{ border: `3px solid ${T.gold}` }} className="rounded-2xl overflow-hidden mb-3">
+            <table className="w-full text-center">
+              <thead>
+                <tr style={{ background: T.nav, color: T.gold }}>
+                  {["VALOR", "VEZES", "PARCELA"].map((t) => <th key={t} className="py-3 text-xs tracking-widest font-bold">{t}</th>)}
+                </tr>
+              </thead>
+              <tbody style={{ color: T.textPaper, background: "#fff" }}>
+                {linhas.map((l) => (
+                  <tr key={l.valor} style={{ borderTop: `1px solid ${T.line}` }}>
+                    <td className="py-2.5 text-sm font-semibold">{fmtValorTabela(l.valor)}</td>
+                    <td className="py-2.5 text-sm font-semibold">{v}x</td>
+                    <td className="py-2.5 text-sm font-semibold">{fmt(l.parcela)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center gap-2">
+          <button onClick={baixarImagem} disabled={linhas.length === 0} style={{ background: T.green, color: T.onColor }} className="rounded-full px-4 py-2.5 text-xs font-medium disabled:opacity-50">
+            Baixar imagem
+          </button>
+          <button onClick={copiar} disabled={linhas.length === 0} style={{ background: T.paperSoft, color: T.textPaper, border: `1px solid ${T.line}` }} className="rounded-full px-4 py-2.5 text-xs font-medium disabled:opacity-50">
+            Copiar texto
+          </button>
+          {msg && <span style={{ color: T.muted }} className="text-xs">{msg}</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------- ASSINATURA ----------------
+const PRECO_MENSAL = 15; // R$ por mês (valor de teste; o definitivo vai pra configuração do servidor)
+
+// mesma regra do banco (função tem_acesso): liberada/ativa sempre; em teste só até a data
+function avaliarAssinatura(a) {
+  if (!a) return { conhecida: false, liberado: true }; // sem informação: não trava a tela (quem decide de verdade é o banco)
+  const agora = Date.now();
+  const testeAte = a.teste_ate ? new Date(a.teste_ate).getTime() : 0;
+  let liberado = false;
+  if (a.status === "liberada" || a.status === "ativa") liberado = true;
+  else if (a.status === "teste") liberado = testeAte > agora;
+  return {
+    conhecida: true,
+    status: a.status,
+    liberado,
+    emTeste: a.status === "teste" && liberado,
+    testeAte: a.teste_ate || null,
+    diasRestantes: Math.max(0, Math.ceil((testeAte - agora) / 86400000)),
+  };
+}
+
+// pede ao servidor o link de pagamento e leva o usuário até ele
+async function iniciarAssinatura(cpfCnpj = "") {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  if (!token) throw new Error("sem sessão");
+  const r = await fetch("/api/assinar", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ cpfCnpj }) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || !j.url) {
+    const e = new Error(j.erro || "pagamento indisponível");
+    e.amigavel = !!j.erro; // mensagem escrita pelo nosso servidor: pode mostrar pro usuário
+    throw e;
+  }
+  window.location.href = j.url;
+}
+
+// CPF/CNPJ de quem vai pagar (o Asaas exige pra emitir a cobrança)
+const docDigitos = (v) => (v || "").replace(/\D/g, "").slice(0, 14);
+function formatDoc(v) {
+  const d = docDigitos(v);
+  if (d.length <= 11) return formatCpf(d);
+  return d.replace(/^(\d{2})(\d{0,3})(\d{0,3})(\d{0,4})(\d{0,2}).*/, (_, a, b, c, e, f) => `${a}.${b}${c ? "." + c : ""}${e ? "/" + e : ""}${f ? "-" + f : ""}`);
+}
+function cnpjValido(v) {
+  const d = docDigitos(v);
+  if (d.length !== 14 || /^(\d)\1{13}$/.test(d)) return false;
+  const dv = (n) => {
+    const pesos = n === 12 ? [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2] : [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+    let soma = 0;
+    for (let i = 0; i < n; i++) soma += parseInt(d[i], 10) * pesos[i];
+    const r = soma % 11;
+    return r < 2 ? 0 : 11 - r;
+  };
+  return dv(12) === parseInt(d[12], 10) && dv(13) === parseInt(d[13], 10);
+}
+function docValido(v) {
+  const d = docDigitos(v);
+  return (d.length === 11 && cpfValido(d)) || (d.length === 14 && cnpjValido(d));
+}
+
+// só para contas liberadas: mostra o que o servidor enxerga da configuração da cobrança
+function DiagnosticoCobranca() {
+  const [estado, setEstado] = useState(null); // { carregando } | { dados } | { erro }
+  const verificar = async () => {
+    setEstado({ carregando: true });
+    try {
+      const { data } = await supabase.auth.getSession();
+      const r = await fetch("/api/diagnostico-cobranca", { headers: { Authorization: `Bearer ${data.session?.access_token || ""}` } });
+      const j = await r.json().catch(() => null);
+      if (!j) setEstado({ erro: "O servidor não respondeu (a função ainda não foi publicada neste deploy?)." });
+      else if (!r.ok) setEstado({ erro: j.erro || "Não deu para verificar." });
+      else setEstado({ dados: j });
+    } catch {
+      setEstado({ erro: "Sem conexão com o servidor." });
+    }
+  };
+  return (
+    <div style={{ borderTop: `1px solid ${T.line}` }} className="pt-5 mb-6">
+      <p style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="font-medium mb-1">Verificar cobrança (administração)</p>
+      <p style={{ color: T.muted }} className="text-xs mb-3">Mostra se o servidor está enxergando as variáveis do Asaas neste endereço. Não mostra nenhum valor secreto.</p>
+      <button onClick={verificar} disabled={estado?.carregando} style={{ background: T.paperSoft, color: T.textPaper, border: `1px solid ${T.line}` }} className="rounded-full px-4 py-2.5 text-xs font-medium disabled:opacity-50">
+        {estado?.carregando ? "Verificando…" : "Verificar agora"}
+      </button>
+      {estado?.erro && <p style={{ color: T.red }} className="text-xs mt-2">{estado.erro}</p>}
+      {estado?.dados && (
+        <div style={{ background: T.paperSoft, border: `1px solid ${T.line}` }} className="rounded-xl p-3 mt-3 space-y-1.5">
+          {Object.entries(estado.dados).map(([k, v]) => (
+            <Row key={k} label={k} value={String(v)} color={String(v).startsWith("NÃO") || String(v).startsWith("valor estranho") ? T.red : undefined} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PedirDocumento({ onConfirmar, onCancelar, busy }) {
+  const [doc, setDoc] = useState("");
+  const d = docDigitos(doc);
+  const invalido = (d.length === 11 || d.length === 14) && !docValido(doc);
+  return (
+    <div className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center">
+      <div onClick={onCancelar} className="absolute inset-0" style={{ background: "rgba(0,0,0,0.55)" }} />
+      <div style={{ background: T.paper }} className="relative w-full sm:max-w-sm rounded-t-3xl sm:rounded-3xl p-5 max-h-[90dvh] overflow-y-auto">
+        <h2 style={{ color: T.textPaper, fontFamily: "'Fraunces', serif" }} className="text-xl font-semibold mb-1">Gerar cobrança</h2>
+        <p style={{ color: T.muted }} className="text-xs mb-4">Para emitir a cobrança, o Asaas (nosso meio de pagamento) precisa do CPF ou CNPJ de quem vai pagar. Você escolhe PIX, boleto ou cartão na próxima tela.</p>
+        <Field label="CPF ou CNPJ">
+          <input
+            style={inputStyle}
+            className="w-full rounded-lg px-3 py-2.5 text-sm outline-none"
+            type="text"
+            inputMode="numeric"
+            autoComplete="off"
+            placeholder="000.000.000-00"
+            value={doc}
+            onChange={(e) => setDoc(formatDoc(e.target.value))}
+            onKeyDown={(e) => e.key === "Enter" && docValido(doc) && !busy && onConfirmar(d)}
+          />
+        </Field>
+        {invalido && <p style={{ color: T.red }} className="text-xs -mt-2 mb-3">Número inválido — confira os dígitos.</p>}
+        <div className="flex gap-2 mt-1">
+          <button onClick={onCancelar} style={{ background: T.paperSoft, color: T.textPaper, border: `1px solid ${T.line}` }} className="flex-1 rounded-full py-2.5 text-sm font-medium">Cancelar</button>
+          <button onClick={() => onConfirmar(d)} disabled={!docValido(doc) || busy} style={{ background: docValido(doc) ? T.green : T.line, color: docValido(doc) ? T.onColor : T.muted }} className="flex-1 rounded-full py-2.5 text-sm font-medium disabled:cursor-not-allowed">
+            {busy ? "Aguarde…" : "Continuar"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AvisoTeste({ info, onAssinar, busy, onAtualizar }) {
+  const d = info.diasRestantes;
+  return (
+    <div style={{ background: T.amberTint, color: T.textPaper, border: "1px solid #F3D9B1" }} className="rounded-xl px-4 py-3 text-sm mb-4 flex flex-wrap items-center justify-between gap-2">
+      <span>
+        <b>Teste grátis:</b> {d > 1 ? `faltam ${d} dias` : d === 1 ? "falta 1 dia" : "termina hoje"}. Depois disso é preciso assinar para continuar criando e alterando empréstimos.
+      </span>
+      <span className="flex items-center gap-3 flex-wrap">
+        {onAtualizar && (
+          <button onClick={onAtualizar} style={{ color: T.muted }} className="text-xs underline py-2.5">Já paguei? Atualizar</button>
+        )}
+        <button onClick={onAssinar} disabled={busy} style={{ background: T.green, color: T.onColor }} className="rounded-full px-4 py-2.5 text-xs font-medium disabled:opacity-50">
+          {busy ? "Aguarde…" : "Assinar agora"}
+        </button>
+      </span>
+    </div>
+  );
+}
+
+function PaywallScreen({ info, email, onAssinar, busy, erro, onAtualizar, onBackup, backupBusy, onSair, docModal }) {
+  const titulo = info.status === "atrasada" ? "Pagamento em atraso" : info.status === "cancelada" ? "Assinatura cancelada" : "Seu teste grátis terminou";
+  const texto = info.status === "atrasada"
+    ? "Não identificamos o pagamento da mensalidade. Regularize para voltar a criar e alterar empréstimos."
+    : info.status === "cancelada"
+    ? "Sua assinatura foi cancelada. Assine de novo para voltar a criar e alterar empréstimos."
+    : "Assine para continuar criando e alterando empréstimos.";
+  return (
+    <div style={{ background: T.ink, fontFamily: "'Inter', system-ui, sans-serif" }} className="min-h-[100dvh] w-full flex items-center justify-center px-4">
+      <div style={CARD} className="w-full max-w-sm rounded-3xl p-7 text-center">
+        <ShieldCheck size={28} style={{ color: T.gold, margin: "0 auto 10px" }} />
+        <h1 style={{ fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif", color: T.textPaper }} className="text-xl font-semibold mb-1.5">{titulo}</h1>
+        <p style={{ color: T.muted }} className="text-sm mb-1">{texto}</p>
+        <p style={{ color: T.textPaper }} className="text-sm mb-5"><b>{fmt(PRECO_MENSAL)}</b> por mês</p>
+        <button onClick={onAssinar} disabled={busy} style={{ background: T.green, color: T.onColor }} className="w-full rounded-full py-2.5 text-sm font-medium disabled:opacity-50">
+          {busy ? "Aguarde…" : "Assinar"}
+        </button>
+        {erro && <p style={{ color: T.red }} className="text-xs mt-2">{erro}</p>}
+        <button onClick={onAtualizar} style={{ color: T.muted }} className="mt-1 py-2.5 px-2 text-xs underline">Já paguei, atualizar</button>
+        <div style={{ borderTop: `1px solid ${T.line}` }} className="mt-5 pt-4">
+          <p style={{ color: T.muted }} className="text-xs mb-2">Seus dados continuam guardados. Você pode baixar uma cópia a qualquer momento.</p>
+          <button onClick={onBackup} disabled={backupBusy} style={{ background: T.paperSoft, color: T.textPaper, border: `1px solid ${T.line}` }} className="rounded-full px-4 py-2.5 text-xs font-medium disabled:opacity-50">
+            {backupBusy ? "Aguarde…" : "Baixar meus dados"}
+          </button>
+        </div>
+        <p style={{ color: T.muted }} className="text-xs mt-4">Conta: {email}</p>
+        <button onClick={onSair} style={{ color: T.muted }} className="py-2.5 px-3 text-xs underline">Sair</button>
+      </div>
+      {docModal}
     </div>
   );
 }
@@ -1706,19 +2456,21 @@ function ClientDossie({ client, onBack, onEditClient, onDeleteClient, onAddLoan,
 
   return (
     <div>
-      <button onClick={onBack} className="flex items-center gap-1.5 mb-4 text-sm" style={{ color: T.textInk }}>
+      <button onClick={onBack} className="flex items-center gap-1.5 mb-2 py-2 pr-4 text-sm" style={{ color: T.textInk }}>
         <ArrowLeft size={15} /> Voltar
       </button>
 
       <div style={CARD} className="rounded-2xl p-4 sm:p-5 mb-4">
         <div className="flex items-start justify-between gap-2 mb-1">
-          <h2 style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="text-xl sm:text-2xl font-semibold truncate">{client.nome}</h2>
+          <h2 style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="text-xl sm:text-2xl font-semibold min-w-0 break-words">{client.nome}</h2>
           <div className="flex items-center gap-3 shrink-0">
-            <button onClick={onExportPDF} title="Exportar PDF"><FileDown size={17} style={{ color: T.muted }} /></button>
-            <button onClick={() => setEditingClient(true)} title="Editar cliente"><Pencil size={17} style={{ color: T.muted }} /></button>
+            <button onClick={onExportPDF} title="Exportar PDF" aria-label="Exportar PDF" className="p-2 -m-2"><FileDown size={17} style={{ color: T.muted }} /></button>
+            <button onClick={() => setEditingClient(true)} title="Editar cliente" aria-label="Editar cliente" className="p-2 -m-2"><Pencil size={17} style={{ color: T.muted }} /></button>
           </div>
         </div>
         {client.telefone && <p style={{ color: T.muted }} className="text-sm mb-2">{client.telefone}</p>}
+        {client.cpf && <p style={{ color: T.muted }} className="text-sm mb-2">CPF {client.cpf}</p>}
+        {client.endereco && <p style={{ color: T.muted }} className="text-sm mb-2">{client.endereco}</p>}
 
         <div className="grid grid-cols-3 gap-2 mt-3">
           <MiniStat label="Emprestado" value={fmt(calc.totalEmprestado)} />
@@ -1743,7 +2495,7 @@ function ClientDossie({ client, onBack, onEditClient, onDeleteClient, onAddLoan,
 
       <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
         <p style={{ color: T.textInk }} className="text-sm font-medium">Histórico de empréstimos</p>
-        <button onClick={() => setAddingLoan(true)} style={{ background: T.gold, color: T.onColor }} className="flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-medium whitespace-nowrap shrink-0">
+        <button onClick={() => setAddingLoan(true)} style={{ background: T.gold, color: T.onColor }} className="flex items-center gap-1 rounded-full px-3.5 py-2.5 text-xs font-medium whitespace-nowrap shrink-0">
           <Plus size={13} strokeWidth={2.5} /> Novo empréstimo
         </button>
       </div>
@@ -1775,7 +2527,7 @@ function ClientDossie({ client, onBack, onEditClient, onDeleteClient, onAddLoan,
 
       {editingClient && (
         <EditClientForm
-          initial={{ nome: client.nome, telefone: client.telefone, observacoes: client.observacoes }}
+          initial={{ nome: client.nome, telefone: client.telefone, cpf: client.cpf, endereco: client.endereco, observacoes: client.observacoes }}
           onClose={() => setEditingClient(false)}
           onSave={async (data) => { await onEditClient(data); setEditingClient(false); }}
         />
@@ -1791,13 +2543,15 @@ function ClientDossie({ client, onBack, onEditClient, onDeleteClient, onAddLoan,
           editando
           initial={{
             ...novoEmprestimoForm(),
-            tipo: editingLoan.parcelado ? "parcelado" : "unico",
+            tipo: editingLoan.pagamentoDiario ? "pagdiario" : editingLoan.parcelasMensais ? "mensal" : editingLoan.parcelado ? "parcelado" : editingLoan.jurosDiario ? "diario" : "unico",
+            taxaDia: editingLoan.pagamentoDiario ? "" : editingLoan.jurosDiario ? String(editingLoan.taxaDia > 0 ? editingLoan.taxaDia : Math.round((editingLoan.taxaJuros / (editingLoan.prazoDias || 1)) * 100) / 100) : "",
+            qtdParcelas: String(editingLoan.prazoDias),
             valor: String(editingLoan.valor),
             taxaJuros: String(editingLoan.taxaJuros),
             prazoDias: String(editingLoan.prazoDias),
             dataEmprestimo: editingLoan.dataEmprestimo,
             garantia: editingLoan.garantia,
-            diasCobranca: editingLoan.parcelado ? editingLoan.diasCobranca : DIAS_SEG_SAB,
+            diasCobranca: editingLoan.parcelado || editingLoan.jurosDiario || editingLoan.pagamentoDiario ? editingLoan.diasCobranca : DIAS_SEG_SAB,
             pularFeriados: editingLoan.pularFeriados,
           }}
           onClose={() => setEditingLoan(null)}
@@ -1824,7 +2578,7 @@ function MiniStat({ label, value, color }) {
   return (
     <div style={{ background: T.paperSoft }} className="rounded-lg p-2.5">
       <div style={{ color: T.muted }} className="text-[10px] uppercase tracking-wide mb-0.5">{label}</div>
-      <div style={{ color: color || T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="text-sm font-semibold tabular-nums truncate">{value}</div>
+      <div style={{ color: color || T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="text-[clamp(11px,3.4vw,14px)] sm:text-sm font-semibold tabular-nums truncate">{value}</div>
     </div>
   );
 }
@@ -1841,6 +2595,10 @@ function LoanCard({ loan, expanded, onToggle, onPay, onEditPayment, onRemovePaym
 
   const subtitulo = calc.parcelado
     ? `${calc.pagas}/${calc.parcelas.length} parcelas pagas` + (calc.atrasado ? ` · ${calc.atrasadas.length} atrasada${calc.atrasadas.length > 1 ? "s" : ""}` : "")
+    : calc.pagamentoDiario
+    ? `${fmt(calc.valorDiario)} por dia` + (calc.atrasado ? ` · ${calc.diasAtraso}d de atraso` : calc.diaAtual >= calc.diasPrevistos ? " · último dia" : ` · dia ${calc.diaAtual}/${calc.diasPrevistos}`)
+    : calc.diario
+    ? (calc.taxaDia ? `${calc.taxaDia}% ao dia × ${calc.diasTotal} dias` : `${loan.taxaJuros}% em ${calc.diasTotal} dias`) + (calc.atrasado ? ` · ${calc.diasAtraso}d de atraso` : ` · juro ${calc.diasContados}/${calc.diasTotal} dias`)
     : `${loan.taxaJuros}% a.m.` + (calc.atrasado ? ` · ${calc.diasAtraso}d de atraso` : ` · ${calc.periodos} período${calc.periodos > 1 ? "s" : ""}`);
 
   // joga as parcelas atrasadas pra depois da última parcela, nos mesmos dias
@@ -1873,9 +2631,9 @@ function LoanCard({ loan, expanded, onToggle, onPay, onEditPayment, onRemovePaym
     <div style={CARD} className="rounded-2xl overflow-hidden">
       <button onClick={onToggle} className="w-full flex items-center justify-between px-4 py-3.5 text-left">
         <div className="min-w-0">
-          <div style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="font-medium truncate flex items-center gap-1.5">
-            {fmt(loan.valor)} emprestado
-            {calc.atrasado && <AlertTriangle size={12} style={{ color: T.red }} />}
+          <div style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="font-medium flex items-start gap-1.5">
+            <span className="min-w-0">{fmt(loan.valor)} emprestado</span>
+            {calc.atrasado && <AlertTriangle size={12} style={{ color: T.red }} className="mt-1.5 shrink-0" />}
           </div>
           <div style={{ color: calc.atrasado ? T.red : T.muted, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="text-xs mt-0.5">
             {fmtData(loan.dataEmprestimo)} · {subtitulo}
@@ -1900,6 +2658,24 @@ function LoanCard({ loan, expanded, onToggle, onPay, onEditPayment, onRemovePaym
                 <Row label={`Total a receber (${calc.parcelas.length} parcelas)`} value={fmt(calc.totalDevido)} bold />
                 <Row label={`Lucro (${loan.valor > 0 ? Math.round((calc.juros / loan.valor) * 100) : 0}%)`} value={fmt(calc.juros)} color={T.greenSoft} />
               </>
+            ) : calc.pagamentoDiario ? (
+              <>
+                <Row label={`Parcela por dia (${calc.diasPrevistos}×)`} value={fmt(calc.valorDiario)} />
+                {!positivo && (calc.cobrarHoje > 0.01 || calc.ehDiaDeCobranca) && (
+                  <Row label={calc.diaAtual >= calc.diasPrevistos ? "Cobrar hoje (quitar tudo)" : "Cobrar hoje"} value={fmt(calc.cobrarHoje)} bold color={calc.atrasado ? T.red : undefined} />
+                )}
+                {!positivo && !calc.ehDiaDeCobranca && calc.proximaCobranca && (
+                  <Row label={`Próxima cobrança (${fmtDataCurta(calc.proximaCobranca)})`} value={fmt(calc.valorProxima)} />
+                )}
+                <Row label={`Juros (${loan.taxaJuros}% fixo no total)`} value={fmt(calc.juros)} color={T.greenSoft} />
+                <Row label="Total a receber" value={fmt(calc.totalDevido)} bold />
+              </>
+            ) : calc.diario ? (
+              <>
+                <Row label={`Juros até hoje (${fmt(calc.jurosDia)}/dia · ${calc.diasContados} de ${calc.diasTotal} dias)`} value={fmt(calc.juros)} />
+                <Row label="Juros total combinado" value={fmt(calc.jurosTotal)} color={T.greenSoft} />
+                <Row label="Total devido hoje" value={fmt(calc.totalDevido)} bold />
+              </>
             ) : (
               <>
                 <Row label={`Juros (${loan.taxaJuros}% × ${calc.periodos} período${calc.periodos > 1 ? "s" : ""} de ${calc.prazoDias}d)`} value={fmt(calc.juros)} />
@@ -1908,16 +2684,17 @@ function LoanCard({ loan, expanded, onToggle, onPay, onEditPayment, onRemovePaym
             )}
             <Row label="Já pago" value={fmt(calc.totalPago)} color={T.greenSoft} />
             <Row label="Saldo em aberto" value={positivo ? "Quitado" : fmt(calc.saldo)} color={positivo ? T.green : T.red} bold />
-            {calc.parcelado && <Row label="Cobrança" value={rotuloDias(loan.diasCobranca) + (loan.pularFeriados ? ", sem feriados" : "")} />}
+            {loan.parcelasMensais && <Row label="Juros" value={`${loan.taxaJuros}% ao mês`} />}
+            {(calc.diario || calc.pagamentoDiario || (calc.parcelado && !loan.parcelasMensais)) && <Row label="Cobrança" value={rotuloDias(loan.diasCobranca) + (loan.pularFeriados ? ", sem feriados" : "")} />}
             {loan.garantia && <Row label="Garantia" value={loan.garantia} />}
           </div>
 
           {!positivo && (
             <div className="flex flex-wrap gap-2 mt-3">
-              <button onClick={() => setConfirmQuitar(true)} style={{ background: T.green, color: T.onColor }} className="flex items-center gap-1 rounded-full px-3.5 py-1.5 text-xs font-medium">
+              <button onClick={() => setConfirmQuitar(true)} style={{ background: T.green, color: T.onColor }} className="flex items-center gap-1 rounded-full px-3.5 py-2.5 text-xs font-medium">
                 <CheckCheck size={13} /> Quitar empréstimo
               </button>
-              {calc.parcelado && calc.atrasadas.length > 0 && (
+              {calc.parcelado && !loan.parcelasMensais && calc.atrasadas.length > 0 && (
                 <button onClick={abrirReagendar} style={{ background: T.red, color: T.onColor }} className="flex items-center gap-1 rounded-full px-3.5 py-1.5 text-xs font-medium">
                   <CalendarClock size={13} /> Reagendar atrasadas ({calc.atrasadas.length})
                 </button>
@@ -2002,10 +2779,10 @@ function LoanCard({ loan, expanded, onToggle, onPay, onEditPayment, onRemovePaym
           )}
 
           <div className="flex items-center gap-4 mt-3 pt-3" style={{ borderTop: `1px solid ${T.line}` }}>
-            <button onClick={onEdit} className="flex items-center gap-1 text-xs" style={{ color: T.muted }}>
+            <button onClick={onEdit} className="flex items-center gap-1 text-xs py-2.5" style={{ color: T.muted }}>
               <Pencil size={12} /> Editar
             </button>
-            <button onClick={() => setConfirmRemove(true)} className="flex items-center gap-1 text-xs" style={{ color: T.red }}>
+            <button onClick={() => setConfirmRemove(true)} className="flex items-center gap-1 text-xs py-2.5" style={{ color: T.red }}>
               <Trash2 size={12} /> Remover empréstimo
             </button>
           </div>
@@ -2107,10 +2884,10 @@ function BaixaControls({ parcela: p, onBaixar, onCancelar }) {
     return (
       <div className="flex items-center gap-1.5">
         <DecimalField value={valor} onChange={setValor} className="w-24! py-1.5!" />
-        <button onClick={confirmar} disabled={!(v > 0) || enviando} title="Confirmar baixa" style={{ background: v > 0 ? T.green : T.line, color: v > 0 ? T.onColor : T.muted }} className="rounded-full w-8 h-8 flex items-center justify-center shrink-0 disabled:cursor-not-allowed">
+        <button onClick={confirmar} disabled={!(v > 0) || enviando} title="Confirmar baixa" style={{ background: v > 0 ? T.green : T.line, color: v > 0 ? T.onColor : T.muted }} className="rounded-full w-9 h-9 flex items-center justify-center shrink-0 disabled:cursor-not-allowed">
           <Check size={14} />
         </button>
-        <button onClick={() => setEditando(false)} title="Desistir" style={{ color: T.muted }} className="shrink-0"><X size={14} /></button>
+        <button onClick={() => setEditando(false)} title="Desistir" style={{ color: T.muted }} className="shrink-0 p-2"><X size={14} /></button>
       </div>
     );
   }
@@ -2118,7 +2895,7 @@ function BaixaControls({ parcela: p, onBaixar, onCancelar }) {
   return (
     <div className="flex items-center gap-2">
       {p.pago > 0 && (
-        <button onClick={() => setConfirmCancelar(true)} style={{ color: T.red }} className="flex items-center gap-1 text-xs whitespace-nowrap">
+        <button onClick={() => setConfirmCancelar(true)} style={{ color: T.red }} className="flex items-center gap-1 text-xs whitespace-nowrap py-2">
           <Undo2 size={12} /> Cancelar baixa
         </button>
       )}
@@ -2126,7 +2903,7 @@ function BaixaControls({ parcela: p, onBaixar, onCancelar }) {
         <button
           onClick={() => { setValor(String(Math.round(p.restante * 100) / 100)); setEditando(true); }}
           style={{ background: T.green, color: T.onColor }}
-          className="rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap"
+          className="rounded-full px-4 py-2.5 text-xs font-medium whitespace-nowrap"
         >
           Baixar
         </button>
@@ -2167,7 +2944,7 @@ function ParcelasModal({ titulo, descricao, linhas: iniciais, onClose, onSave })
       <div style={CARD} className="relative w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-5 sm:p-6 max-h-[90dvh] overflow-y-auto">
         <div className="flex items-center justify-between mb-2">
           <h2 style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="text-xl font-semibold">{titulo}</h2>
-          <button onClick={onClose}><X size={20} style={{ color: T.muted }} /></button>
+          <button onClick={onClose} aria-label="Fechar" className="p-2 -m-2"><X size={20} style={{ color: T.muted }} /></button>
         </div>
         {descricao && <p style={{ color: T.muted }} className="text-sm mb-4">{descricao}</p>}
 
@@ -2241,8 +3018,8 @@ function PaymentRow({ payment, onEdit, onRemove }) {
       <div className="flex items-center gap-2">
         {payment.pendente && <Tag cor={T.goldSoft}>a enviar</Tag>}
         <span style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }}>{fmt(payment.valor)}</span>
-        <button onClick={() => setEditing(true)} style={{ color: T.muted }} title="Corrigir valor"><Pencil size={11} /></button>
-        <button onClick={() => setConfirmRemove(true)} style={{ color: T.red }} title="Cancelar este pagamento"><Undo2 size={12} /></button>
+        <button onClick={() => setEditing(true)} style={{ color: T.muted }} title="Corrigir valor" aria-label="Corrigir valor" className="p-2.5 -m-2.5"><Pencil size={11} /></button>
+        <button onClick={() => setConfirmRemove(true)} style={{ color: T.red }} title="Cancelar este pagamento" aria-label="Cancelar este pagamento" className="p-2.5 -m-2.5"><Undo2 size={12} /></button>
       </div>
       {confirmRemove && (
         <ConfirmModal
@@ -2362,9 +3139,9 @@ function Hoje({ dados, onAbrirCliente, onBaixarParcela, onCancelarBaixa }) {
 
 function HojeStat({ label, value, color }) {
   return (
-    <div style={CARD} className="rounded-2xl p-3">
+    <div style={CARD} className="rounded-2xl p-2.5 min-[360px]:p-3">
       <div style={{ color: T.muted }} className="text-[10px] uppercase tracking-wide mb-1">{label}</div>
-      <div style={{ color: color || T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="text-sm sm:text-lg font-semibold tabular-nums truncate">{value}</div>
+      <div style={{ color: color || T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="text-[clamp(11px,3.4vw,14px)] sm:text-lg font-semibold tabular-nums truncate">{value}</div>
     </div>
   );
 }
@@ -2388,7 +3165,7 @@ function HojeRow({ item, isLast, onAbrir, onBaixar, onCancelar }) {
         {item.parcela ? (
           <BaixaControls parcela={item.parcela} onBaixar={onBaixar} onCancelar={onCancelar} />
         ) : (
-          <button onClick={onAbrir} style={{ color: T.goldSoft }} className="text-xs flex items-center gap-0.5">abrir <ChevronRight size={12} /></button>
+          <button onClick={onAbrir} style={{ color: T.goldSoft }} className="text-xs flex items-center gap-0.5 py-2.5 -my-2.5 pl-3">abrir <ChevronRight size={12} /></button>
         )}
       </div>
     </div>
@@ -2515,7 +3292,7 @@ function Caixa({ clients, onAbrirCliente }) {
     <div>
       <div className="flex flex-wrap gap-1.5 mb-3">
         {opcoes.map(([k, label]) => (
-          <button key={k} onClick={() => { setPeriodo(k); setDiaAberto(null); }} style={{ background: periodo === k ? T.gold : T.paper, color: periodo === k ? T.onColor : T.textInk, border: `1px solid ${periodo === k ? T.gold : T.line}` }} className="rounded-full px-3 py-1.5 text-xs font-medium">
+          <button key={k} onClick={() => { setPeriodo(k); setDiaAberto(null); }} style={{ background: periodo === k ? T.gold : T.paper, color: periodo === k ? T.onColor : T.textInk, border: `1px solid ${periodo === k ? T.gold : T.line}` }} className="rounded-full px-3.5 py-2 text-xs font-medium">
             {label}
           </button>
         ))}
@@ -2546,7 +3323,7 @@ function Caixa({ clients, onAbrirCliente }) {
         {dados.entradas.length} baixa{dados.entradas.length !== 1 ? "s" : ""} · {dados.saidas.length} empréstimo{dados.saidas.length !== 1 ? "s" : ""} novo{dados.saidas.length !== 1 ? "s" : ""}
         {dados.estornos.length > 0 && ` · ${dados.estornos.length} baixa${dados.estornos.length > 1 ? "s" : ""} cancelada${dados.estornos.length > 1 ? "s" : ""}`}
         {" · "}
-        <button onClick={exportar} style={{ color: T.goldSoft }} className="underline">exportar CSV</button>
+        <button onClick={exportar} style={{ color: T.goldSoft }} className="underline py-2.5">exportar CSV</button>
       </p>
 
       {dados.dias.length === 0 ? (
@@ -2618,7 +3395,7 @@ function NotifDropdown({ itens, onClose, onClickItem, onVerAgenda }) {
   return (
     <>
       <div onClick={onClose} className="fixed inset-0 z-40" />
-      <div style={{ ...CARD, border: `1px solid ${T.line}` }} className="absolute right-0 top-12 z-50 w-72 rounded-2xl overflow-hidden shadow-xl">
+      <div style={{ ...CARD, border: `1px solid ${T.line}` }} className="fixed inset-x-3 top-[calc(4.25rem+env(safe-area-inset-top))] sm:absolute sm:inset-x-auto sm:right-0 sm:top-12 z-50 sm:w-72 rounded-2xl overflow-hidden shadow-xl">
         <div style={{ borderBottom: `1px solid ${T.line}` }} className="px-4 py-3">
           <p style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="font-medium text-sm">Vencimentos de hoje e atrasados</p>
         </div>
@@ -2735,7 +3512,7 @@ function TermsModal({ onClose }) {
           <h2 style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="text-lg font-semibold flex items-center gap-2">
             <FileText size={18} /> Termos de Uso
           </h2>
-          <button onClick={onClose}><X size={20} style={{ color: T.muted }} /></button>
+          <button onClick={onClose} aria-label="Fechar" className="p-2 -m-2"><X size={20} style={{ color: T.muted }} /></button>
         </div>
         <pre style={{ color: T.textPaper, fontFamily: "'Inter', system-ui, sans-serif", whiteSpace: "pre-wrap" }} className="text-sm leading-relaxed">
           {TERMOS_TEXTO}
@@ -2792,8 +3569,10 @@ function AceitarTermosScreen({ onAccept }) {
 // Tela de login. Não existe cadastro público: as contas são criadas pelo
 // painel /admin. O "esqueci minha senha" só aparece na tela de login do
 // /admin (pra você, dono); quem usa o app pede uma senha nova pra você.
-function AuthScreen({ permitirEsqueci = false }) {
-  const [mode, setMode] = useState("login"); // login | esqueci
+function AuthScreen({ permitirEsqueci = false, permitirCadastro = false }) {
+  const [mode, setMode] = useState("login"); // login | esqueci | cadastro
+  const [nome, setNome] = useState("");
+  const [aceitou, setAceitou] = useState(false);
   const [email, setEmail] = useState("");
   const [senha, setSenha] = useState("");
   const [showSenha, setShowSenha] = useState(false);
@@ -2805,9 +3584,11 @@ function AuthScreen({ permitirEsqueci = false }) {
   const emailValido = /\S+@\S+\.\S+/.test(email);
 
   const faltando = [];
-  if (mode === "login") {
+  if (mode === "login" || mode === "cadastro") {
+    if (mode === "cadastro" && nome.trim().length < 2) faltando.push("nome");
     if (!emailValido) faltando.push("email válido");
     if (senha.length < 6) faltando.push("senha com pelo menos 6 caracteres");
+    if (mode === "cadastro" && !aceitou) faltando.push("aceitar os Termos de Uso");
   } else {
     if (!emailValido) faltando.push("email válido");
   }
@@ -2822,6 +3603,14 @@ function AuthScreen({ permitirEsqueci = false }) {
       if (mode === "login") {
         const { error } = await supabase.auth.signInWithPassword({ email: email.trim().toLowerCase(), password: senha });
         if (error) setErr(traduzErro(error.message));
+      } else if (mode === "cadastro") {
+        const { data, error } = await supabase.auth.signUp({
+          email: email.trim().toLowerCase(),
+          password: senha,
+          options: { data: { nome: nome.trim() }, emailRedirectTo: window.location.origin },
+        });
+        if (error) setErr(traduzErro(error.message));
+        else if (!data?.session) setInfo("Conta criada! Enviamos um link de confirmação para o seu email. Confirme e depois entre aqui. Confira também o spam.");
       } else if (mode === "esqueci") {
         const { error } = await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase(), {
           redirectTo: window.location.origin + window.location.pathname,
@@ -2865,11 +3654,17 @@ function AuthScreen({ permitirEsqueci = false }) {
       <div className="lg:hidden mb-7"><Logo grande /></div>
       <div style={CARD} className="w-full max-w-sm rounded-3xl p-7 sm:p-8">
         <h1 style={{ fontFamily: FONT_DISPLAY, color: T.textPaper, letterSpacing: "-0.02em" }} className="text-2xl font-bold">
-          {mode === "login" ? "Entrar" : "Recuperar senha"}
+          {mode === "login" ? "Entrar" : mode === "cadastro" ? "Criar conta" : "Recuperar senha"}
         </h1>
         <p style={{ color: T.muted }} className="text-sm mt-1 mb-6">
-          {mode === "login" ? "Use o email e a senha que você recebeu." : "Mandamos um link pro seu email."}
+          {mode === "login" ? "Use o seu email e a sua senha." : mode === "cadastro" ? `Teste grátis por 7 dias. Depois ${fmt(PRECO_MENSAL)} por mês, sem fidelidade.` : "Mandamos um link pro seu email."}
         </p>
+
+        {mode === "cadastro" && (
+          <Field label="Seu nome">
+            <input style={inputStyle} type="text" className="w-full rounded-lg px-3 py-2.5 text-sm outline-none" value={nome} onChange={(e) => setNome(e.target.value)} placeholder="Como quer ser chamado" autoComplete="name" />
+          </Field>
+        )}
 
         <Field label="Email">
           <input style={inputStyle} type="email" className="w-full rounded-lg px-3 py-2.5 text-sm outline-none" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="voce@email.com" autoComplete="email" onKeyDown={(e) => e.key === "Enter" && mode === "esqueci" && submit()} />
@@ -2885,10 +3680,10 @@ function AuthScreen({ permitirEsqueci = false }) {
                 value={senha}
                 onChange={(e) => setSenha(e.target.value)}
                 placeholder="mínimo 6 caracteres"
-                autoComplete="current-password"
+                autoComplete={mode === "cadastro" ? "new-password" : "current-password"}
                 onKeyDown={(e) => e.key === "Enter" && submit()}
               />
-              <button type="button" onClick={() => setShowSenha((s) => !s)} className="absolute right-3 top-1/2 -translate-y-1/2" style={{ color: T.muted }}>
+              <button type="button" onClick={() => setShowSenha((s) => !s)} aria-label="Mostrar ou esconder a senha" className="absolute right-1 top-1/2 -translate-y-1/2 p-2.5" style={{ color: T.muted }}>
                 {showSenha ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
             </div>
@@ -2901,27 +3696,41 @@ function AuthScreen({ permitirEsqueci = false }) {
           </button>
         )}
 
+        {mode === "cadastro" && (
+          <label className="flex items-start gap-2 mb-4 text-xs cursor-pointer" style={{ color: T.muted }}>
+            <input type="checkbox" checked={aceitou} onChange={(e) => setAceitou(e.target.checked)} className="w-4 h-4 mt-0.5 shrink-0 accent-[#3E6B4C]" />
+            <span>
+              Li e aceito os{" "}
+              <button type="button" onClick={() => setShowTermos(true)} className="underline" style={{ color: T.goldSoft }}>Termos de Uso</button>.
+            </span>
+          </label>
+        )}
+
         {err && <p style={{ color: T.red }} className="text-xs mb-3 text-center">{err}</p>}
         {info && <p style={{ color: T.green }} className="text-xs mb-3 text-center">{info}</p>}
 
         <SubmitButton
           valid={valid}
           busy={busy}
-          label={mode === "login" ? "Entrar" : "Enviar link de redefinição"}
+          label={mode === "login" ? "Entrar" : mode === "cadastro" ? "Criar conta" : "Enviar link de redefinição"}
           busyLabel="Aguarda…"
           missing={faltando.join(", ")}
           onClick={submit}
         />
 
-        {mode === "esqueci" ? (
-          <button onClick={() => { setMode("login"); setErr(""); setInfo(""); }} className="w-full text-center text-xs mt-4" style={{ color: T.goldSoft }}>
-            Voltar para o login
+        {mode !== "login" ? (
+          <button onClick={() => { setMode("login"); setErr(""); setInfo(""); }} className="w-full text-center text-xs mt-4 py-2" style={{ color: T.goldSoft }}>
+            Já tenho conta: voltar para o login
+          </button>
+        ) : permitirCadastro ? (
+          <button onClick={() => { setMode("cadastro"); setErr(""); setInfo(""); }} className="w-full text-center text-xs mt-4 py-2" style={{ color: T.goldSoft }}>
+            Não tem conta? <b>Criar conta grátis</b>
           </button>
         ) : (
           <p style={{ color: T.muted }} className="text-center text-xs mt-4">Esqueceu a senha? Fale com quem te deu acesso ao AGIOPAY.</p>
         )}
 
-        <button onClick={() => setShowTermos(true)} className="w-full text-center text-[11px] mt-3 flex items-center justify-center gap-1" style={{ color: T.muted }}>
+        <button onClick={() => setShowTermos(true)} className="w-full text-center text-[11px] mt-1 py-2.5 flex items-center justify-center gap-1" style={{ color: T.muted }}>
           <FileText size={11} /> Ver Termos de Uso
         </button>
       </div>
@@ -2932,7 +3741,8 @@ function AuthScreen({ permitirEsqueci = false }) {
   );
 }
 
-function AccountModal({ user, nomeUsuario, online, backupBusy, ultimoBackup, onBaixarBackup, onRestaurarBackup, onClose, onUpdated }) {
+function AccountModal({ user, nomeUsuario, online, backupBusy, ultimoBackup, onBaixarBackup, onRestaurarBackup, onClose, onUpdated, assinaturaInfo, onAssinar, assinando }) {
+  const [showTabela, setShowTabela] = useState(false);
   const [arquivoRestaurar, setArquivoRestaurar] = useState(null);
   const [msgBackup, setMsgBackup] = useState(null); // { ok } | { erro }
   const [nome, setNome] = useState(nomeUsuario || "");
@@ -2990,7 +3800,7 @@ function AccountModal({ user, nomeUsuario, online, backupBusy, ultimoBackup, onB
           <h2 style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="text-xl font-semibold flex items-center gap-2">
             <UserCircle size={20} /> Minha conta
           </h2>
-          <button onClick={onClose}><X size={20} style={{ color: T.muted }} /></button>
+          <button onClick={onClose} aria-label="Fechar" className="p-2 -m-2"><X size={20} style={{ color: T.muted }} /></button>
         </div>
 
         <p style={{ color: T.muted }} className="text-xs uppercase tracking-wide mb-1">Email</p>
@@ -3005,6 +3815,32 @@ function AccountModal({ user, nomeUsuario, online, backupBusy, ultimoBackup, onB
           <SubmitButton valid={nomeValido} busy={busyNome} label="Salvar nome" busyLabel="Salvando…" missing="nome" onClick={salvarNome} />
         </div>
 
+        {assinaturaInfo?.conhecida && (
+          <div style={{ borderTop: `1px solid ${T.line}` }} className="pt-5 mb-6">
+            <p style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="font-medium mb-1">Assinatura</p>
+            <p style={{ color: T.muted }} className="text-xs mb-3">
+              {assinaturaInfo.status === "liberada" && "Conta liberada: sem cobrança."}
+              {assinaturaInfo.status === "ativa" && `Assinatura ativa (${fmt(PRECO_MENSAL)} por mês).`}
+              {assinaturaInfo.emTeste && `Teste grátis até ${new Date(assinaturaInfo.testeAte).toLocaleDateString("pt-BR")} (${assinaturaInfo.diasRestantes} dia${assinaturaInfo.diasRestantes === 1 ? "" : "s"}). Depois: ${fmt(PRECO_MENSAL)} por mês.`}
+              {!assinaturaInfo.liberado && "Sua assinatura precisa ser regularizada."}
+            </p>
+            {(assinaturaInfo.emTeste || !assinaturaInfo.liberado) && (
+              <button onClick={onAssinar} disabled={assinando} style={{ background: T.green, color: T.onColor }} className="rounded-full px-4 py-2.5 text-xs font-medium disabled:opacity-50">
+                {assinando ? "Aguarde…" : "Assinar"}
+              </button>
+            )}
+          </div>
+        )}
+
+        {assinaturaInfo?.status === "liberada" && <DiagnosticoCobranca />}
+
+        <div style={{ borderTop: `1px solid ${T.line}` }} className="pt-5 mb-6">
+          <p style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="font-medium mb-1">Tabela de cobrança</p>
+          <p style={{ color: T.muted }} className="text-xs mb-3">Monte uma tabela de valor × vezes × parcela para mostrar ao cliente. Dá para baixar como imagem ou copiar o texto.</p>
+          <button onClick={() => setShowTabela(true)} style={{ background: T.green, color: T.onColor }} className="rounded-full px-4 py-2.5 text-xs font-medium">Abrir tabela</button>
+          {showTabela && <TabelaCobranca onClose={() => setShowTabela(false)} />}
+        </div>
+
         <div style={{ borderTop: `1px solid ${T.line}` }} className="pt-5 mb-6">
           <p style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="font-medium mb-1 flex items-center gap-2"><HardDriveDownload size={16} /> Backup</p>
           <p style={{ color: T.muted }} className="text-xs mb-3">
@@ -3012,10 +3848,10 @@ function AccountModal({ user, nomeUsuario, online, backupBusy, ultimoBackup, onB
             {" "}Último backup: <b>{ultimoBackup ? new Date(ultimoBackup).toLocaleDateString("pt-BR") : "nunca"}</b>.
           </p>
           <div className="flex flex-wrap gap-2">
-            <button onClick={onBaixarBackup} disabled={!online || backupBusy} style={{ background: T.green, color: T.onColor }} className="rounded-full px-4 py-2 text-xs font-medium disabled:opacity-50">
+            <button onClick={onBaixarBackup} disabled={!online || backupBusy} style={{ background: T.green, color: T.onColor }} className="rounded-full px-4 py-2.5 text-xs font-medium disabled:opacity-50">
               {backupBusy ? "Aguarde…" : "Baixar backup"}
             </button>
-            <label style={{ background: T.paperSoft, color: T.textPaper, border: `1px solid ${T.line}`, opacity: !online || backupBusy ? 0.5 : 1 }} className="rounded-full px-4 py-2 text-xs font-medium cursor-pointer">
+            <label style={{ background: T.paperSoft, color: T.textPaper, border: `1px solid ${T.line}`, opacity: !online || backupBusy ? 0.5 : 1 }} className="rounded-full px-4 py-2.5 text-xs font-medium cursor-pointer">
               Restaurar de um backup
               <input
                 type="file"
@@ -3055,7 +3891,7 @@ function AccountModal({ user, nomeUsuario, online, backupBusy, ultimoBackup, onB
                   onChange={(e) => setNovaSenha(e.target.value)}
                   placeholder="mínimo 6 caracteres"
                 />
-                <button type="button" onClick={() => setShowSenha((s) => !s)} className="absolute right-3 top-1/2 -translate-y-1/2" style={{ color: T.muted }}>
+                <button type="button" onClick={() => setShowSenha((s) => !s)} aria-label="Mostrar ou esconder a senha" className="absolute right-1 top-1/2 -translate-y-1/2 p-2.5" style={{ color: T.muted }}>
                   {showSenha ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
               </div>
@@ -3117,7 +3953,7 @@ function NovaSenhaScreen({ onDone }) {
             <Field label="Nova senha">
               <div className="relative">
                 <input style={inputStyle} type={showSenha ? "text" : "password"} className="w-full rounded-lg px-3 py-2.5 pr-10 text-sm outline-none" value={senha} onChange={(e) => setSenha(e.target.value)} placeholder="mínimo 6 caracteres" />
-                <button type="button" onClick={() => setShowSenha((s) => !s)} className="absolute right-3 top-1/2 -translate-y-1/2" style={{ color: T.muted }}>
+                <button type="button" onClick={() => setShowSenha((s) => !s)} aria-label="Mostrar ou esconder a senha" className="absolute right-1 top-1/2 -translate-y-1/2 p-2.5" style={{ color: T.muted }}>
                   {showSenha ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
               </div>
@@ -3141,6 +3977,10 @@ function traduzErro(msg) {
   if (m.includes("password should be at least")) return "A senha precisa ter pelo menos 6 caracteres.";
   if (m.includes("email not confirmed")) return "Confirme seu email antes de entrar (verifique a caixa de entrada).";
   if (m.includes("same password")) return "A nova senha precisa ser diferente da atual.";
+  if (m.includes("signups not allowed") || m.includes("signup is disabled")) return "O cadastro de contas novas está desativado no momento. Fale com o suporte do AGIOPAY.";
+  if (m.includes("rate limit") || m.includes("too many requests") || m.includes("security purposes")) return "Muitas tentativas seguidas. Aguarde alguns minutos e tente de novo.";
+  if (m.includes("unable to validate email") || (m.includes("email address") && m.includes("invalid"))) return "Esse email não parece válido. Confira e tente de novo.";
+  if (m.includes("weak password") || m.includes("password is known to be weak") || m.includes("pwned")) return "Essa senha é fraca ou já apareceu em vazamentos. Escolha outra.";
   return msg || "Algo deu errado. Tente de novo.";
 }
 
@@ -3202,7 +4042,7 @@ function Dashboard({ totals, count, atrasadosList, evolucao, onVerClientes, onAd
               : `${totals.atrasados} cliente${totals.atrasados > 1 ? "s" : ""} atrasado${totals.atrasados > 1 ? "s" : ""}`}
           </span>
         </div>
-        <button onClick={onVerClientes} className="text-xs underline opacity-90">ver todos</button>
+        <button onClick={onVerClientes} className="text-xs underline opacity-90 py-2.5 pl-2">ver todos</button>
       </div>
 
       {atrasadosList.length > 0 && (
@@ -3444,6 +4284,50 @@ function IntegerField({ value, onChange, placeholder, className = "" }) {
   );
 }
 
+// CPF: guarda só os 11 dígitos no banco; mostra 000.000.000-00 na tela
+const cpfDigits = (v) => (v || "").replace(/\D/g, "").slice(0, 11);
+function formatCpf(v) {
+  const d = cpfDigits(v);
+  let out = d.slice(0, 3);
+  if (d.length > 3) out += "." + d.slice(3, 6);
+  if (d.length > 6) out += "." + d.slice(6, 9);
+  if (d.length > 9) out += "-" + d.slice(9, 11);
+  return out;
+}
+// campo opcional: vazio é válido; preenchido precisa ter dígitos verificadores corretos
+function cpfValido(v) {
+  const d = cpfDigits(v);
+  if (d.length === 0) return true;
+  if (d.length !== 11 || /^(\d)\1{10}$/.test(d)) return false;
+  const dv = (n) => {
+    let soma = 0;
+    for (let i = 0; i < n; i++) soma += parseInt(d[i], 10) * (n + 1 - i);
+    const r = (soma * 10) % 11;
+    return r === 10 ? 0 : r;
+  };
+  return dv(9) === parseInt(d[9], 10) && dv(10) === parseInt(d[10], 10);
+}
+
+function CpfField({ value, onChange }) {
+  const invalido = cpfDigits(value).length > 0 && !cpfValido(value);
+  return (
+    <>
+      <input
+        style={inputStyle}
+        type="text"
+        inputMode="numeric"
+        placeholder="000.000.000-00"
+        className="w-full rounded-lg px-3 py-2.5 text-sm outline-none"
+        value={value}
+        onChange={(e) => onChange(formatCpf(e.target.value))}
+      />
+      {invalido && cpfDigits(value).length === 11 && (
+        <p style={{ color: T.red }} className="text-xs mt-1">CPF inválido — confira os números.</p>
+      )}
+    </>
+  );
+}
+
 // telefone celular brasileiro: DDD (2 dígitos) + 9 + 8 dígitos = 11 no total,
 // formata sozinho enquanto digita e não deixa passar de 11 números
 function PhoneField({ value, onChange, className = "" }) {
@@ -3532,10 +4416,10 @@ function PresetChips({ presets, onPick, onSave, onRemove, podeSalvar }) {
             style={{ background: T.paperSoft, border: `1px solid ${T.line}` }}
             className="flex items-center gap-1 rounded-full pl-3 pr-1.5 py-1"
           >
-            <button onClick={() => onPick(p)} style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="text-xs">
+            <button onClick={() => onPick(p)} style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="text-xs py-2">
               {p.taxaJuros}% / {p.prazoDias}d
             </button>
-            <button onClick={() => onRemove(i)} style={{ color: T.muted }} title="Remover modelo">
+            <button onClick={() => onRemove(i)} style={{ color: T.muted }} title="Remover modelo" aria-label="Remover modelo" className="p-2 -m-2">
               <X size={11} />
             </button>
           </div>
@@ -3545,7 +4429,7 @@ function PresetChips({ presets, onPick, onSave, onRemove, podeSalvar }) {
             onClick={onSave}
             disabled={!podeSalvar}
             style={{ background: "transparent", border: `1px dashed ${T.line}`, color: T.goldSoft }}
-            className="flex items-center gap-1 rounded-full px-3 py-1 text-xs disabled:opacity-40"
+            className="flex items-center gap-1 rounded-full px-3.5 py-2.5 text-xs disabled:opacity-40"
           >
             <Plus size={11} /> salvar atual
           </button>
@@ -3556,18 +4440,18 @@ function PresetChips({ presets, onPick, onSave, onRemove, podeSalvar }) {
 }
 
 // escolha dos dias da semana em que a cobrança corre
-function DiasCobrancaPicker({ dias, onChange }) {
+function DiasCobrancaPicker({ dias, onChange, titulo = "Dias de cobrança" }) {
   const atalhos = [["Seg–Sex", [1, 2, 3, 4, 5]], ["Seg–Sáb", [1, 2, 3, 4, 5, 6]], ["Todos", [0, 1, 2, 3, 4, 5, 6]]];
   const chave = [...dias].sort().join(",");
   const toggle = (d) => onChange(dias.includes(d) ? dias.filter((x) => x !== d) : [...dias, d].sort());
   return (
     <div className="mb-3.5">
-      <span style={{ color: T.muted, fontFamily: "'Inter', system-ui, sans-serif" }} className="text-xs uppercase tracking-wide block mb-1.5">Dias de cobrança</span>
+      <span style={{ color: T.muted, fontFamily: "'Inter', system-ui, sans-serif" }} className="text-xs uppercase tracking-wide block mb-1.5">{titulo}</span>
       <div className="flex flex-wrap gap-1.5 mb-1.5">
         {atalhos.map(([label, ds]) => {
           const ativo = ds.join(",") === chave;
           return (
-            <button key={label} type="button" onClick={() => onChange(ds)} style={{ background: ativo ? T.goldTint : T.paperSoft, color: ativo ? T.goldSoft : T.textPaper, border: `1px solid ${ativo ? T.gold : T.line}` }} className="rounded-full px-3 py-1 text-xs">
+            <button key={label} type="button" onClick={() => onChange(ds)} style={{ background: ativo ? T.goldTint : T.paperSoft, color: ativo ? T.goldSoft : T.textPaper, border: `1px solid ${ativo ? T.gold : T.line}` }} className="rounded-full px-3.5 py-2 text-xs">
               {label}
             </button>
           );
@@ -3577,7 +4461,7 @@ function DiasCobrancaPicker({ dias, onChange }) {
         {DIAS_SEMANA.map((nome, d) => {
           const ativo = dias.includes(d);
           return (
-            <button key={d} type="button" onClick={() => toggle(d)} style={{ background: ativo ? T.gold : T.paperSoft, color: ativo ? T.onColor : T.muted, border: `1px solid ${ativo ? T.gold : T.line}` }} className="rounded-lg py-1.5 text-xs font-medium">
+            <button key={d} type="button" onClick={() => toggle(d)} style={{ background: ativo ? T.gold : T.paperSoft, color: ativo ? T.onColor : T.muted, border: `1px solid ${ativo ? T.gold : T.line}` }} className="rounded-lg py-2.5 text-xs font-medium">
               {nome}
             </button>
           );
@@ -3645,20 +4529,105 @@ function DatasParcelasEditor({ form, setForm, geradas, puladas }) {
 function LoanFields({ form, setForm, editando, presets = [], onSavePreset, onRemovePreset }) {
   const set = (campo) => (v) => setForm((f) => ({ ...f, [campo]: v }));
   const parcelado = form.tipo === "parcelado";
+  const diario = form.tipo === "diario";
+  const mensal = form.tipo === "mensal";
+  const pagdiario = form.tipo === "pagdiario";
+  const [mostrarTabela, setMostrarTabela] = useState(false);
+  const prevPagDiario = useMemo(() => {
+    if (!pagdiario) return null;
+    const valor = parseFloat(form.valor);
+    const juros = form.taxaJuros === "" ? 0 : parseFloat(form.taxaJuros);
+    const n = parseInt(form.qtdParcelas || "0", 10);
+    if (!(valor > 0)) return null;
+    if (!(n > 0 && n <= 400)) return { dica: "Informe em quantas vezes (dias) para ver o resumo." };
+    if (!(juros >= 0)) return { dica: "Informe o juro total (%)." };
+    if (!form.diasCobranca?.length) return { dica: "Marque pelo menos um dia de cobrança." };
+    const datas = datasJurosDiario(form.dataEmprestimo, form.diasCobranca, form.pularFeriados, n);
+    if (datas.length !== n) return { dica: "Confira a data e os dias de cobrança." };
+    const { total, parcela, ultima } = parcelaDiaria(valor, juros, n);
+    const fim = datas[datas.length - 1];
+    const quais = `${rotuloDias(form.diasCobranca)}${form.pularFeriados ? ", sem feriados" : ""}`;
+    return {
+      linhas: [
+        { label: `Parcela por dia (${n}×)`, value: fmt(parcela), bold: true },
+        { label: `Dias de cobrança (${quais})`, value: `${n} dia${n > 1 ? "s" : ""}` },
+        { label: `Juro total (${juros}%)`, value: fmt(total - valor), color: T.greenSoft },
+        { label: "Total a receber", value: fmt(total), bold: true },
+        { label: "Último dia", value: `${fmtData(fim)}${ultima !== parcela ? ` · ${fmt(ultima)}` : ""}` },
+      ],
+      frase: `Empréstimo de ${fmt(valor)} em ${n}× de ${fmt(parcela)} por dia (${quais}), de ${fmtData(datas[0])} a ${fmtData(fim)}. Total a pagar: ${fmt(total)} (${fmt(total - valor)} de juros). Se pagar menos num dia, o que faltou soma na cobrança do dia seguinte.`,
+    };
+  }, [pagdiario, form.valor, form.taxaJuros, form.qtdParcelas, form.diasCobranca, form.dataEmprestimo, form.pularFeriados]);
+  const prevMensal = useMemo(() => {
+    if (!mensal || editando) return null;
+    const n = parseInt(form.qtdParcelas || "0", 10);
+    const valor = parseFloat(form.valor);
+    const taxa = parseFloat(form.taxaJuros) || 0;
+    if (!(valor > 0)) return null;
+    if (!(n > 0 && n <= 120)) return { dica: "Informe a quantidade de parcelas (1 a 120) para ver o resumo." };
+    if (!form.dataEmprestimo) return { dica: "Informe a data do empréstimo." };
+    const primeira = form.primeiraParcela || addMeses(form.dataEmprestimo, 1);
+    const c = calcularParcelasMensais({ valor, taxaMensal: taxa, n, primeira });
+    const ult = c.valores[n - 1];
+    return {
+      linhas: [
+        { label: `Juros do mês (${taxa}% × ${n})`, value: fmt(c.jurosMes) },
+        { label: `Parcela (${n}×)`, value: fmt(c.cada), bold: true },
+        { label: "Total a receber", value: fmt(c.total), bold: true },
+        { label: "Primeira e última parcela", value: `${fmtData(c.datas[0])} · ${fmtData(c.datas[n - 1])}` },
+      ],
+      frase: `Empréstimo de ${fmt(valor)} em ${n}× de ${fmt(c.cada)}${ult === c.cada ? "" : ` (a última de ${fmt(ult)})`}, de ${fmtData(c.datas[0])} a ${fmtData(c.datas[n - 1])}. Total a pagar: ${fmt(c.total)} (${fmt(c.total - valor)} de juros).`,
+    };
+  }, [mensal, editando, form.qtdParcelas, form.valor, form.taxaJuros, form.dataEmprestimo, form.primeiraParcela]);
+  const prevDiario = useMemo(() => {
+    if (!diario) return null;
+    const taxaDia = parseFloat(form.taxaDia);
+    const n = parseInt(form.qtdParcelas || "0", 10);
+    const valor = parseFloat(form.valor);
+    if (!(valor > 0)) return null;
+    if (!(taxaDia > 0)) return { dica: "Informe o juro por dia (%) para ver o resumo." };
+    if (!(n > 0 && n <= 400)) return { dica: "Informe por quantos dias o juro vai somar (1 a 400)." };
+    if (!form.diasCobranca?.length) return { dica: "Marque pelo menos um dia que conta juro." };
+    const datas = datasJurosDiario(form.dataEmprestimo, form.diasCobranca, form.pularFeriados, n);
+    if (datas.length !== n) return { dica: "Confira a data e os dias que contam juro." };
+    const totalPct = jurosTotalDiario(taxaDia, n);
+    const jurosTotal = Math.round(valor * totalPct) / 100;
+    const jurosDia = Math.round(valor * taxaDia) / 100;
+    const ultima = datas[datas.length - 1];
+    const quais = `${rotuloDias(form.diasCobranca)}${form.pularFeriados ? ", sem feriados" : ""}`;
+    return {
+      linhas: [
+        { label: `Juro por dia (${taxaDia}%)`, value: fmt(jurosDia) },
+        { label: `Dias que contam juro (${quais})`, value: `${n} dia${n > 1 ? "s" : ""}` },
+        { label: `Juro total (${totalPct}%)`, value: fmt(jurosTotal), color: T.greenSoft },
+        { label: "Total a receber no fim", value: fmt(valor + jurosTotal), bold: true },
+        { label: "Juro completo em", value: fmtData(ultima) },
+      ],
+      frase: `Empréstimo de ${fmt(valor)}. O juro é de ${taxaDia}% ao dia (${fmt(jurosDia)}), contando só ${quais}, por ${n} dias, até ${fmtData(ultima)}. Juro total: ${fmt(jurosTotal)}. Total no fim: ${fmt(valor + jurosTotal)}. Se pagar antes, paga só o juro dos dias que passaram. Pode pagar quando e quanto puder.`,
+    };
+  }, [diario, form.taxaDia, form.qtdParcelas, form.valor, form.dataEmprestimo, form.diasCobranca, form.pularFeriados]);
+
   const { datas, geradas, puladas } = useMemo(() => (parcelado && !editando ? datasDoForm(form) : { datas: [], geradas: [], puladas: [] }), [form, parcelado, editando]);
 
   const previewUnico = useMemo(() => {
-    if (parcelado) return null;
+    if (parcelado || diario || mensal || pagdiario) return null;
     const valor = parseFloat(form.valor);
-    const taxa = parseFloat(form.taxaJuros);
-    if (!valor || !taxa || !form.dataEmprestimo) return null;
+    const taxa = parseFloat(form.taxaJuros) || 0;
+    if (!(valor > 0) || !form.dataEmprestimo) return null;
     const prazoDias = parseInt(form.prazoDias || "30", 10) || 30;
     // mesma contagem do calcularEmprestimo: dias inteiros de calendário
     const diasDecorridos = Math.max(0, diasEntreISO(form.dataEmprestimo, hojeISO()));
     const periodos = Math.max(1, Math.ceil(diasDecorridos / prazoDias));
     const juros = valor * (taxa / 100) * periodos;
-    return { periodos, prazoDias, juros, total: valor + juros };
-  }, [parcelado, form.valor, form.taxaJuros, form.dataEmprestimo, form.prazoDias]);
+    const jurosPeriodo = valor * (taxa / 100);
+    return {
+      linhas: [
+        { label: `Juros (${periodos} período${periodos > 1 ? "s" : ""} de ${prazoDias}d)`, value: fmt(juros), color: T.greenSoft },
+        { label: "Total devido hoje", value: fmt(valor + juros), bold: true },
+      ],
+      frase: `Empréstimo de ${fmt(valor)} com juros de ${taxa}% a cada ${prazoDias} dias. Até ${fmtData(addDias(form.dataEmprestimo, prazoDias))} deve ${fmt(valor + jurosPeriodo)}; passando disso, soma mais ${fmt(jurosPeriodo)} a cada ${prazoDias} dias. Pode pagar quando e quanto puder.`,
+    };
+  }, [parcelado, diario, mensal, pagdiario, form.valor, form.taxaJuros, form.dataEmprestimo, form.prazoDias]);
 
   const valor = parseFloat(form.valor) || 0;
   const valorParcela = parseFloat(form.valorParcela) || 0;
@@ -3667,16 +4636,126 @@ function LoanFields({ form, setForm, editando, presets = [], onSavePreset, onRem
   return (
     <>
       {!editando && (
-        <div className="flex gap-1 mb-4 p-1 rounded-full" style={{ background: T.paperSoft, border: `1px solid ${T.line}` }}>
-          {[["parcelado", "Parcelado (diário)"], ["unico", "Pagamento único"]].map(([k, label]) => (
-            <button key={k} type="button" onClick={() => set("tipo")(k)} style={{ background: form.tipo === k ? T.paper : "transparent", color: form.tipo === k ? T.goldSoft : T.muted, boxShadow: form.tipo === k ? T.shadow : "none" }} className="flex-1 rounded-full py-1.5 text-xs font-medium">
+        <div className="grid grid-cols-2 gap-1 mb-4 p-1 rounded-2xl" style={{ background: T.paperSoft, border: `1px solid ${T.line}` }}>
+          {[["pagdiario", "Pagamento diário"], ["diario", "Juros diário"], ["mensal", "Parcelado mensal"], ["unico", "Pagamento único"]].map(([k, label]) => (
+            <button key={k} type="button" onClick={() => set("tipo")(k)} style={{ background: form.tipo === k ? T.paper : "transparent", color: form.tipo === k ? T.goldSoft : T.muted, boxShadow: form.tipo === k ? T.shadow : "none" }} className="rounded-full py-2.5 text-xs font-medium">
               {label}
             </button>
           ))}
         </div>
       )}
 
-      {parcelado ? (
+      {pagdiario ? (
+        <>
+          <div className="grid grid-cols-2 gap-x-3">
+            <Field label="Valor emprestado">
+              <DecimalField value={form.valor} onChange={set("valor")} placeholder="0,00" />
+            </Field>
+            <Field label="Data do empréstimo">
+              <DateField value={form.dataEmprestimo} onChange={set("dataEmprestimo")} />
+            </Field>
+          </div>
+
+          <div className="grid grid-cols-2 gap-x-3">
+            <Field label="Quantas vezes (dias)">
+              <IntegerField value={form.qtdParcelas} onChange={set("qtdParcelas")} placeholder="20" />
+            </Field>
+            <Field label="Juros total %">
+              <DecimalField value={form.taxaJuros} onChange={set("taxaJuros")} placeholder="20" />
+            </Field>
+          </div>
+
+          <DiasCobrancaPicker dias={form.diasCobranca} onChange={set("diasCobranca")} />
+
+          <label className="flex items-center gap-2 mb-3.5 text-sm cursor-pointer" style={{ color: T.textPaper }}>
+            <input type="checkbox" checked={form.pularFeriados} onChange={(e) => set("pularFeriados")(e.target.checked)} className="w-4 h-4 accent-[#3E6B4C]" />
+            Pular feriados nacionais
+          </label>
+
+          <p style={{ color: T.muted }} className="text-xs mb-3">
+            O juro é fixo no total e a parcela por dia é sempre a mesma (valor + juro ÷ vezes). O que o cliente deixar de pagar num dia soma automaticamente na cobrança do dia seguinte.
+          </p>
+
+          <ResumoAoVivo r={prevPagDiario} />
+
+          <button type="button" onClick={() => setMostrarTabela(true)} style={{ color: T.green }} className="text-xs font-medium mb-2 py-2.5">
+            Ver tabela de valores
+          </button>
+          {mostrarTabela && <TabelaCobranca vezesInicial={form.qtdParcelas} jurosInicial={form.taxaJuros} onClose={() => setMostrarTabela(false)} />}
+        </>
+      ) : mensal ? (
+        <>
+          <div className="grid grid-cols-2 gap-x-3">
+            <Field label="Valor emprestado">
+              <DecimalField value={form.valor} onChange={set("valor")} placeholder="0,00" />
+            </Field>
+            <Field label="Data do empréstimo">
+              <DateField value={form.dataEmprestimo} onChange={set("dataEmprestimo")} />
+            </Field>
+          </div>
+
+          {editando ? (
+            <p style={{ color: T.muted }} className="text-xs mb-4">
+              As parcelas já foram geradas. Pra mudar a data ou o valor de uma parcela, use o lápis ao lado dela.
+            </p>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 gap-x-3">
+                <Field label="Juros % ao mês">
+                  <DecimalField value={form.taxaJuros} onChange={set("taxaJuros")} placeholder="10" />
+                </Field>
+                <Field label="Qtd. de parcelas">
+                  <IntegerField value={form.qtdParcelas} onChange={set("qtdParcelas")} placeholder="6" />
+                </Field>
+              </div>
+              <div className="grid grid-cols-2 gap-x-3">
+                <Field label="Primeira parcela">
+                  <DateField value={form.primeiraParcela || addMeses(form.dataEmprestimo || hojeISO(), 1)} onChange={set("primeiraParcela")} />
+                </Field>
+              </div>
+
+              <p style={{ color: T.muted }} className="text-xs mb-3">
+                O juro é simples: % ao mês × número de meses, sobre o valor emprestado, dividido em parcelas iguais. As parcelas caem no mesmo dia de cada mês e você pode mudar valor e data de cada uma depois.
+              </p>
+
+              <ResumoAoVivo r={prevMensal} />
+            </>
+          )}
+        </>
+      ) : diario ? (
+        <>
+          <div className="grid grid-cols-2 gap-x-3">
+            <Field label="Valor emprestado">
+              <DecimalField value={form.valor} onChange={set("valor")} placeholder="0,00" />
+            </Field>
+            <Field label="Data do empréstimo">
+              <DateField value={form.dataEmprestimo} onChange={set("dataEmprestimo")} />
+            </Field>
+          </div>
+
+          <div className="grid grid-cols-2 gap-x-3">
+            <Field label="Juros % ao dia">
+              <DecimalField value={form.taxaDia} onChange={set("taxaDia")} placeholder="1" />
+            </Field>
+            <Field label="Por quantos dias">
+              <IntegerField value={form.qtdParcelas} onChange={set("qtdParcelas")} placeholder="30" />
+            </Field>
+          </div>
+
+          <DiasCobrancaPicker titulo="Dias que contam juro" dias={form.diasCobranca} onChange={set("diasCobranca")} />
+
+          <label className="flex items-center gap-2 mb-3.5 text-sm cursor-pointer" style={{ color: T.textPaper }}>
+            <input type="checkbox" checked={form.pularFeriados} onChange={(e) => set("pularFeriados")(e.target.checked)} className="w-4 h-4 accent-[#3E6B4C]" />
+            Pular feriados nacionais
+          </label>
+
+          <p style={{ color: T.muted }} className="text-xs mb-3">
+            O juro soma a % ao dia sobre o valor emprestado, só nos dias marcados abaixo (ex.: tire sábado e domingo), pelo número de dias que você escolher. Depois disso o juro para. O cliente paga quando e quanto puder, e quem paga antes deve só o juro dos dias que passaram.
+          </p>
+
+          <ResumoAoVivo r={prevDiario} />
+        </>
+      ) : parcelado ? (
         <>
           <div className="grid grid-cols-2 gap-x-3">
             <Field label="Valor emprestado">
@@ -3754,12 +4833,7 @@ function LoanFields({ form, setForm, editando, presets = [], onSavePreset, onRem
             podeSalvar={parseFloat(form.taxaJuros) >= 0 && parseInt(form.prazoDias || "0", 10) > 0}
           />
 
-          {previewUnico && (
-            <div style={{ background: T.paperSoft, border: `1px solid ${T.line}` }} className="rounded-xl p-3 mb-4 space-y-1.5">
-              <Row label={`Juros (${previewUnico.periodos} período${previewUnico.periodos > 1 ? "s" : ""} de ${previewUnico.prazoDias}d)`} value={fmt(previewUnico.juros)} color={T.greenSoft} />
-              <Row label="Total devido hoje" value={fmt(previewUnico.total)} bold />
-            </div>
-          )}
+          <ResumoAoVivo r={previewUnico} />
         </>
       )}
 
@@ -3776,6 +4850,7 @@ function ClientLoanForm({ title, initial, onClose, onSave, presets = [], onSaveP
 
   const faltando = [];
   if (!form.nome.trim()) faltando.push("nome");
+  if (!cpfValido(form.cpf)) faltando.push("CPF válido");
   faltando.push(...validarEmprestimo(form, false));
   const valid = faltando.length === 0;
 
@@ -3787,7 +4862,7 @@ function ClientLoanForm({ title, initial, onClose, onSave, presets = [], onSaveP
       <div style={CARD} className="relative w-full sm:max-w-lg rounded-t-3xl sm:rounded-3xl p-5 sm:p-6 max-h-[90dvh] overflow-y-auto">
         <div className="flex items-center justify-between mb-5">
           <h2 style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="text-xl font-semibold">{title}</h2>
-          <button onClick={onClose}><X size={20} style={{ color: T.muted }} /></button>
+          <button onClick={onClose} aria-label="Fechar" className="p-2 -m-2"><X size={20} style={{ color: T.muted }} /></button>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3">
@@ -3796,6 +4871,14 @@ function ClientLoanForm({ title, initial, onClose, onSave, presets = [], onSaveP
           </Field>
           <Field label="Telefone (opcional)">
             <PhoneField value={form.telefone} onChange={(v) => setForm({ ...form, telefone: v })} />
+          </Field>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3">
+          <Field label="CPF (opcional)">
+            <CpfField value={form.cpf} onChange={(v) => setForm({ ...form, cpf: v })} />
+          </Field>
+          <Field label="Endereço (opcional)">
+            <input style={inputStyle} className="w-full rounded-lg px-3 py-2.5 text-sm outline-none" value={form.endereco} onChange={(e) => setForm({ ...form, endereco: e.target.value })} placeholder="Rua, número, bairro, cidade" />
           </Field>
         </div>
 
@@ -3827,7 +4910,7 @@ function LoanForm({ title, initial, editando = false, onClose, onSave, presets =
       <div style={CARD} className="relative w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-5 sm:p-6 max-h-[90dvh] overflow-y-auto">
         <div className="flex items-center justify-between mb-5">
           <h2 style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="text-xl font-semibold">{title}</h2>
-          <button onClick={onClose}><X size={20} style={{ color: T.muted }} /></button>
+          <button onClick={onClose} aria-label="Fechar" className="p-2 -m-2"><X size={20} style={{ color: T.muted }} /></button>
         </div>
 
         <LoanFields form={form} setForm={setForm} editando={editando} presets={presets} onSavePreset={onSavePreset} onRemovePreset={onRemovePreset} />
@@ -3841,7 +4924,7 @@ function LoanForm({ title, initial, editando = false, onClose, onSave, presets =
 function EditClientForm({ initial, onClose, onSave }) {
   const [form, setForm] = useState(initial);
   const [saving, setSaving] = useState(false);
-  const valid = form.nome.trim().length > 0;
+  const valid = form.nome.trim().length > 0 && cpfValido(form.cpf);
   const handleSave = async () => { setSaving(true); await onSave(form); setSaving(false); };
 
   return (
@@ -3850,7 +4933,7 @@ function EditClientForm({ initial, onClose, onSave }) {
       <div style={CARD} className="relative w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-5 sm:p-6 max-h-[90dvh] overflow-y-auto">
         <div className="flex items-center justify-between mb-5">
           <h2 style={{ color: T.textPaper, fontFamily: "'Plus Jakarta Sans', 'Inter', sans-serif" }} className="text-xl font-semibold">Editar cliente</h2>
-          <button onClick={onClose}><X size={20} style={{ color: T.muted }} /></button>
+          <button onClick={onClose} aria-label="Fechar" className="p-2 -m-2"><X size={20} style={{ color: T.muted }} /></button>
         </div>
         <Field label="Nome">
           <input style={inputStyle} className="w-full rounded-lg px-3 py-2.5 text-sm outline-none" value={form.nome} onChange={(e) => setForm({ ...form, nome: e.target.value })} />
@@ -3858,11 +4941,55 @@ function EditClientForm({ initial, onClose, onSave }) {
         <Field label="Telefone (opcional)">
           <PhoneField value={form.telefone} onChange={(v) => setForm({ ...form, telefone: v })} />
         </Field>
+        <Field label="CPF (opcional)">
+          <CpfField value={form.cpf} onChange={(v) => setForm({ ...form, cpf: v })} />
+        </Field>
+        <Field label="Endereço (opcional)">
+          <input style={inputStyle} className="w-full rounded-lg px-3 py-2.5 text-sm outline-none" value={form.endereco} onChange={(e) => setForm({ ...form, endereco: e.target.value })} placeholder="Rua, número, bairro, cidade" />
+        </Field>
         <Field label="Observações (opcional)">
           <textarea style={inputStyle} rows={3} className="w-full rounded-lg px-3 py-2.5 text-sm outline-none resize-none" value={form.observacoes || ""} onChange={(e) => setForm({ ...form, observacoes: e.target.value })} />
         </Field>
         <SubmitButton valid={valid} busy={saving} label="Salvar" busyLabel="Salvando…" missing="nome" onClick={handleSave} className="mt-2" />
       </div>
+    </div>
+  );
+}
+
+// resumo que muda enquanto o cobrador digita, logo abaixo dos campos (não fica
+// fixo na tela pra não cobrir o que está sendo digitado), com uma frase pronta
+// pra explicar ao devedor
+function ResumoAoVivo({ r }) {
+  const [copiado, setCopiado] = useState(false);
+  if (!r) return null;
+  const copiar = async () => {
+    try {
+      await navigator.clipboard.writeText(r.frase);
+      setCopiado(true);
+      setTimeout(() => setCopiado(false), 2000);
+    } catch {
+      // sem permissão pra copiar: a frase continua na tela pra copiar na mão
+    }
+  };
+  return (
+    <div style={{ background: T.paperSoft, border: `1px solid ${T.line}`, boxShadow: T.shadow }} className="rounded-xl p-3 mb-4 space-y-1.5">
+      <p style={{ color: T.muted }} className="text-[11px] uppercase tracking-wide">Resumo ao vivo</p>
+      {r.dica ? (
+        <p style={{ color: T.muted }} className="text-xs">{r.dica}</p>
+      ) : (
+        <>
+          {r.linhas.map((l) => (
+            <Row key={l.label} label={l.label} value={l.value} bold={l.bold} color={l.color} />
+          ))}
+          <div style={{ borderTop: `1px solid ${T.line}` }} className="pt-2 mt-1">
+            <p style={{ color: T.muted }} className="text-[11px] uppercase tracking-wide mb-1">O que falar pro devedor</p>
+            <p style={{ color: T.textPaper }} className="text-xs leading-relaxed">{r.frase}</p>
+            <button type="button" onClick={copiar} style={{ color: T.green }} className="text-xs font-medium mt-1 py-2">
+              {copiado ? "Copiado ✓" : "Copiar texto"}
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -3890,6 +5017,8 @@ function ReportClientBlock({ client }) {
         </span>
       </div>
       {client.telefone && <p style={{ fontSize: 11, color: "#5c5540", margin: "0 0 4px" }}>{client.telefone}</p>}
+      {client.cpf && <p style={{ fontSize: 11, color: "#5c5540", margin: "0 0 4px" }}>CPF {client.cpf}</p>}
+      {client.endereco && <p style={{ fontSize: 11, color: "#5c5540", margin: "0 0 4px" }}>{client.endereco}</p>}
       {client.observacoes && (
         <div style={{ background: "#F1EAD6", borderRadius: 6, padding: "6px 10px", margin: "6px 0 10px" }}>
           <p style={{ fontSize: 10, fontWeight: 600, color: "#5c5540", margin: "0 0 2px", textTransform: "uppercase" }}>Observações</p>
@@ -3908,7 +5037,11 @@ function ReportClientBlock({ client }) {
               <tbody>
                 <ReportRow label="Valor emprestado" value={fmt(l.valor)} />
                 {l.calc.parcelado ? (
-                  <ReportRow label={`Parcelas (${rotuloDias(l.diasCobranca)})`} value={`${l.calc.pagas}/${l.calc.parcelas.length} pagas${l.calc.atrasadas.length ? ` · ${l.calc.atrasadas.length} atrasada${l.calc.atrasadas.length > 1 ? "s" : ""}` : ""}`} />
+                  <ReportRow label={l.parcelasMensais ? `Parcelas mensais (${l.taxaJuros}% ao mês)` : `Parcelas (${rotuloDias(l.diasCobranca)})`} value={`${l.calc.pagas}/${l.calc.parcelas.length} pagas${l.calc.atrasadas.length ? ` · ${l.calc.atrasadas.length} atrasada${l.calc.atrasadas.length > 1 ? "s" : ""}` : ""}`} />
+                ) : l.calc.pagamentoDiario ? (
+                  <ReportRow label={`Pagamento diário (${fmt(l.calc.valorDiario)}/dia, juro fixo ${l.taxaJuros}%, ${rotuloDias(l.diasCobranca)})`} value={`dia ${Math.min(l.calc.diaAtual, l.calc.diasPrevistos)}/${l.calc.diasPrevistos} — juros ${fmt(l.calc.juros)}`} />
+                ) : l.calc.diario ? (
+                  <ReportRow label={`Juros diário (${l.calc.taxaDia ? `${l.calc.taxaDia}% ao dia × ${l.calc.diasTotal} dias` : `${l.taxaJuros}% em ${l.calc.diasTotal} dias`}, ${rotuloDias(l.diasCobranca)})`} value={`${l.calc.diasContados}/${l.calc.diasTotal} dias — ${fmt(l.calc.juros)}`} />
                 ) : (
                   <ReportRow label={`Juros (${l.taxaJuros}% a cada ${l.calc.prazoDias}d)`} value={`${l.calc.periodos} período${l.calc.periodos > 1 ? "s" : ""} — ${fmt(l.calc.juros)}`} />
                 )}
